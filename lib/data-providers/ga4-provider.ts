@@ -13,6 +13,15 @@
  * Every event name and funnel shape is read from the requested property's
  * config (lib/properties/*.ts) — nothing about a specific property's
  * funnel is hardcoded here.
+ *
+ * IMPORTANT — request volume: every call to the GA4 Data API goes through
+ * runReportQueued() below, which caps how many requests are in flight at
+ * once and retries transient RESOURCE_EXHAUSTED (quota) errors with
+ * backoff. This app also fetches all of a property's funnel events in ONE
+ * request (dimensioning by "eventName" instead of firing one filtered
+ * request per event) — a naive one-request-per-event design very quickly
+ * exceeds GA4's concurrent-request quota once several dashboard sections
+ * load at once. Keep both of these when touching this file.
  */
 import { BetaAnalyticsDataClient, protos } from "@google-analytics/data";
 import { OAuth2Client } from "google-auth-library";
@@ -34,6 +43,7 @@ import type { DataProvider } from "./types";
 import { ga4Auth, getPropertyId } from "./ga4-config";
 
 type IRunReportRequest = protos.google.analytics.data.v1beta.IRunReportRequest;
+type IRunReportResponse = protos.google.analytics.data.v1beta.IRunReportResponse;
 type IFilterExpression = protos.google.analytics.data.v1beta.IFilterExpression;
 
 const GA4_DIMENSION_NAME: Partial<Record<keyof DimensionFilters, string>> = {
@@ -67,6 +77,70 @@ function getClient(): BetaAnalyticsDataClient {
   );
 }
 
+// ── concurrency-limited, retrying GA4 request queue ─────────────────────
+// GA4's Data API enforces a per-property concurrent-request quota that a
+// dashboard with several panels can easily exceed if every panel fires its
+// own requests the moment it mounts. Every runReport call in this file goes
+// through this queue instead of calling the client directly.
+const MAX_CONCURRENT_GA4_REQUESTS = 4;
+let activeGa4Requests = 0;
+const ga4Queue: (() => void)[] = [];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function acquireGa4Slot(): Promise<void> {
+  if (activeGa4Requests < MAX_CONCURRENT_GA4_REQUESTS) {
+    activeGa4Requests++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    ga4Queue.push(() => {
+      activeGa4Requests++;
+      resolve();
+    });
+  });
+}
+
+function releaseGa4Slot(): void {
+  activeGa4Requests--;
+  const next = ga4Queue.shift();
+  if (next) next();
+}
+
+function isResourceExhausted(err: unknown): boolean {
+  const code = (err as { code?: number })?.code;
+  const message = err instanceof Error ? err.message : String(err);
+  return code === 8 || message.includes("RESOURCE_EXHAUSTED");
+}
+
+async function runReportQueued(request: IRunReportRequest): Promise<IRunReportResponse> {
+  await acquireGa4Slot();
+  try {
+    const client = getClient();
+    let attempt = 0;
+    // Retry only the specific transient "too many requests right now" case —
+    // any other error (bad property ID, auth failure, invalid dimension)
+    // surfaces immediately.
+    while (true) {
+      try {
+        const [response] = await client.runReport(request);
+        return response;
+      } catch (err) {
+        attempt++;
+        if (attempt <= 3 && isResourceExhausted(err)) {
+          await sleep(500 * attempt);
+          continue;
+        }
+        throw err;
+      }
+    }
+  } finally {
+    releaseGa4Slot();
+  }
+}
+
 function requirePropertyId(property: PropertyConfig): string {
   const id = getPropertyId(property);
   if (!id) {
@@ -77,11 +151,8 @@ function requirePropertyId(property: PropertyConfig): string {
   return id;
 }
 
-function dimensionFilterFor(filters: DimensionFilters, eventName: string | null): IFilterExpression | undefined {
+function dimensionFilterFor(filters: DimensionFilters): IFilterExpression | undefined {
   const expressions: IFilterExpression[] = [];
-  if (eventName !== null) {
-    expressions.push({ filter: { fieldName: "eventName", stringFilter: { value: eventName } } });
-  }
 
   (Object.keys(GA4_DIMENSION_NAME) as (keyof DimensionFilters)[]).forEach((key) => {
     const values = filters[key];
@@ -108,37 +179,6 @@ function ga4OutputDimensionName(dimension: BreakdownDimension): string[] {
   }
 }
 
-interface EventReportRow {
-  key: string;
-  activeUsers: number;
-}
-
-async function runEventReport(
-  propertyId: string,
-  eventName: string | null,
-  range: { start: string; end: string },
-  filters: DimensionFilters,
-  outputDimensions: string[],
-): Promise<EventReportRow[]> {
-  const client = getClient();
-  const request: IRunReportRequest = {
-    property: `properties/${propertyId}`,
-    dateRanges: [{ startDate: range.start, endDate: range.end }],
-    dimensions: outputDimensions.map((name) => ({ name })),
-    metrics: [{ name: "activeUsers" }],
-    dimensionFilter: dimensionFilterFor(filters, eventName),
-    limit: 100000,
-  };
-
-  const [response] = await client.runReport(request);
-  const rows = response.rows ?? [];
-
-  return rows.map((row) => {
-    const dimValues = (row.dimensionValues ?? []).map((d) => d.value ?? "(not set)");
-    return { key: dimValues.join(" / "), activeUsers: Number(row.metricValues?.[0]?.value ?? 0) };
-  });
-}
-
 /** Every distinct (key -> GA4 event name) this property's shopping+checkout funnels need, deduped by key (a key can be shared, e.g. a shopping stage that is also the checkout funnel's root). */
 function funnelEventKeys(property: PropertyConfig): { key: string; eventName: string }[] {
   const map = new Map<string, string>();
@@ -149,6 +189,13 @@ function funnelEventKeys(property: PropertyConfig): { key: string; eventName: st
   return Array.from(map, ([key, eventName]) => ({ key, eventName }));
 }
 
+/**
+ * Fetches every funnel-stage count this property needs for one date
+ * range/filter/breakdown combination in a SINGLE GA4 request (by
+ * dimensioning on "eventName" rather than issuing one request per event —
+ * see the file header), plus one more request for extraMetrics (e.g.
+ * FlowerAura App's ActiveUsers) if the property declares any.
+ */
 async function fetchCountsByKey(
   property: PropertyConfig,
   range: { start: string; end: string },
@@ -158,21 +205,51 @@ async function fetchCountsByKey(
   const propertyId = requirePropertyId(property);
   const byKey = new Map<string, RawCounts>();
 
-  const jobs: { key: string; eventName: string | null }[] = [
-    ...funnelEventKeys(property),
-    ...property.extraMetrics.map((m) => ({ key: m.key, eventName: m.ga4EventName })),
-  ];
+  const eventNameToKeys = new Map<string, string[]>();
+  funnelEventKeys(property).forEach(({ key, eventName }) => {
+    const keys = eventNameToKeys.get(eventName) ?? [];
+    keys.push(key);
+    eventNameToKeys.set(eventName, keys);
+  });
 
-  await Promise.all(
-    jobs.map(async ({ key, eventName }) => {
-      const rows = await runEventReport(propertyId, eventName, range, filters, outputDimensions);
-      for (const row of rows) {
-        const counts = byKey.get(row.key) ?? {};
-        counts[key] = row.activeUsers;
-        byKey.set(row.key, counts);
-      }
-    }),
-  );
+  const response = await runReportQueued({
+    property: `properties/${propertyId}`,
+    dateRanges: [{ startDate: range.start, endDate: range.end }],
+    dimensions: ["eventName", ...outputDimensions].map((name) => ({ name })),
+    metrics: [{ name: "activeUsers" }],
+    dimensionFilter: dimensionFilterFor(filters),
+    limit: 100000,
+  });
+
+  for (const row of response.rows ?? []) {
+    const values = (row.dimensionValues ?? []).map((d) => d.value ?? "(not set)");
+    const [eventName, ...rest] = values;
+    const keys = eventNameToKeys.get(eventName);
+    if (!keys) continue; // an event this property doesn't track — ignore
+    const restKey = rest.join(" / ");
+    const activeUsers = Number(row.metricValues?.[0]?.value ?? 0);
+    const counts = byKey.get(restKey) ?? {};
+    keys.forEach((key) => (counts[key] = activeUsers));
+    byKey.set(restKey, counts);
+  }
+
+  if (property.extraMetrics.length > 0) {
+    const extraResponse = await runReportQueued({
+      property: `properties/${propertyId}`,
+      dateRanges: [{ startDate: range.start, endDate: range.end }],
+      dimensions: outputDimensions.map((name) => ({ name })),
+      metrics: [{ name: "activeUsers" }],
+      dimensionFilter: dimensionFilterFor(filters),
+      limit: 100000,
+    });
+    for (const row of extraResponse.rows ?? []) {
+      const restKey = (row.dimensionValues ?? []).map((d) => d.value ?? "(not set)").join(" / ");
+      const activeUsers = Number(row.metricValues?.[0]?.value ?? 0);
+      const counts = byKey.get(restKey) ?? {};
+      property.extraMetrics.forEach((m) => (counts[m.key] = activeUsers));
+      byKey.set(restKey, counts);
+    }
+  }
 
   return byKey;
 }
@@ -195,7 +272,23 @@ async function itemDimensionCoverage(
   ga4Dimension: string,
 ): Promise<number> {
   const propertyId = requirePropertyId(property);
-  const rows = await runEventReport(propertyId, eventName, range, filters, [ga4Dimension]);
+  const filterExpressions: IFilterExpression[] = [{ filter: { fieldName: "eventName", stringFilter: { value: eventName } } }];
+  const baseFilter = dimensionFilterFor(filters);
+  if (baseFilter) filterExpressions.push(baseFilter);
+
+  const response = await runReportQueued({
+    property: `properties/${propertyId}`,
+    dateRanges: [{ startDate: range.start, endDate: range.end }],
+    dimensions: [{ name: ga4Dimension }],
+    metrics: [{ name: "activeUsers" }],
+    dimensionFilter: { andGroup: { expressions: filterExpressions } },
+    limit: 100000,
+  });
+
+  const rows = (response.rows ?? []).map((row) => ({
+    key: row.dimensionValues?.[0]?.value ?? "(not set)",
+    activeUsers: Number(row.metricValues?.[0]?.value ?? 0),
+  }));
   const total = rows.reduce((sum, r) => sum + r.activeUsers, 0);
   if (total === 0) return 1;
   const missing = rows
@@ -260,12 +353,17 @@ export class Ga4DataProvider implements DataProvider {
 
   async getDataQuality(property: PropertyConfig, query: DashboardQuery): Promise<DataQualityCheckResult[]> {
     const counts = await this.getFunnelCounts(property, query);
+    const purchaseLikeEvent = property.checkout.stages.at(-1)?.ga4EventName ?? property.shopping.stages.at(-1)!.ga4EventName;
 
-    const [itemIdCoverage, itemCategoryCoverage, itemListNameCoverage] = await Promise.all([
-      itemDimensionCoverage(property, query.range, query.filters, property.checkout.stages.at(-1)?.ga4EventName ?? property.shopping.stages.at(-1)!.ga4EventName, "itemId"),
-      itemDimensionCoverage(property, query.range, query.filters, property.checkout.stages.at(-1)?.ga4EventName ?? property.shopping.stages.at(-1)!.ga4EventName, "itemCategory"),
-      itemDimensionCoverage(property, query.range, query.filters, property.shopping.stages[0].ga4EventName, "itemListName"),
-    ]);
+    const itemIdCoverage = await itemDimensionCoverage(property, query.range, query.filters, purchaseLikeEvent, "itemId");
+    const itemCategoryCoverage = await itemDimensionCoverage(property, query.range, query.filters, purchaseLikeEvent, "itemCategory");
+    const itemListNameCoverage = await itemDimensionCoverage(
+      property,
+      query.range,
+      query.filters,
+      property.shopping.stages[0].ga4EventName,
+      "itemListName",
+    );
 
     const checkoutStagesWithData = property.checkout.stages.filter((s) => (counts[s.key] ?? 0) > 0).length;
 
@@ -295,16 +393,14 @@ export class Ga4DataProvider implements DataProvider {
 
   async getFilterOptions(property: PropertyConfig): Promise<FilterOptions> {
     const propertyId = requirePropertyId(property);
-    const client = getClient();
     const dims = ["deviceCategory", "country", "city", "sessionSource", "sessionMedium"];
-    const request: IRunReportRequest = {
+    const response = await runReportQueued({
       property: `properties/${propertyId}`,
       dateRanges: [{ startDate: "90daysAgo", endDate: "today" }],
       dimensions: dims.map((name) => ({ name })),
       metrics: [{ name: "activeUsers" }],
       limit: 100000,
-    };
-    const [response] = await client.runReport(request);
+    });
     const rows = response.rows ?? [];
 
     const collect = (idx: number) => Array.from(new Set(rows.map((r) => r.dimensionValues?.[idx]?.value ?? "(not set)"))).sort();
@@ -324,8 +420,7 @@ export class Ga4DataProvider implements DataProvider {
 export async function testGa4Connection(property: PropertyConfig): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     const propertyId = requirePropertyId(property);
-    const client = getClient();
-    await client.runReport({
+    await runReportQueued({
       property: `properties/${propertyId}`,
       dateRanges: [{ startDate: "yesterday", endDate: "today" }],
       metrics: [{ name: "activeUsers" }],

@@ -20,6 +20,19 @@ export const DEFAULT_COMPARISON_MODE = "d7" as const;
 export const DROP_TABLE_DEFAULT_ROWS = 10;
 
 /**
+ * Minimum volume (the property's shopping-funnel root count, e.g. Session
+ * Start users) a breakdown row must have in the CURRENT period before it's
+ * eligible for "Where did ECR drop?" ranking. Real GA4 city/source-medium
+ * breakdowns have a long tail of dimension values with a handful of users
+ * each, where one purchase more-or-less swings ECR by 100 pp — that's
+ * sampling noise, not a real drop worth investigating, and would otherwise
+ * dominate the ranking ahead of genuinely large, meaningful movements. This
+ * does not affect the plain (non-drop-ranked) breakdown tables, which still
+ * show every row.
+ */
+export const MIN_VOLUME_FOR_DROP_RANKING = 30;
+
+/**
  * Data quality thresholds. A stage's user count relative to session_start
  * users (or the previous day for the same stage) below this ratio triggers
  * a warning instead of being presented as a pure business movement.

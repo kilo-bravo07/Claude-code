@@ -27,10 +27,10 @@ export const FLOWERAURA_WEB: PropertyConfig = {
   checkout: {
     root: { key: "beginCheckout", label: "Begin Checkout", ga4EventName: "begin_checkout" },
     stages: [
-      { key: "step2", label: "Step 2", ga4EventName: "checkout_step_2" },
-      { key: "step3", label: "Step 3", ga4EventName: "checkout_step_3" },
-      { key: "step4", label: "Step 4", ga4EventName: "checkout_step_4" },
-      { key: "step5", label: "Step 5", ga4EventName: "checkout_step_5" },
+      { key: "step2", label: "Step 2", ga4EventName: "checkout_step2" },
+      { key: "step3", label: "Step 3", ga4EventName: "checkout_step3" },
+      { key: "step4", label: "Step 4", ga4EventName: "checkout_step4" },
+      { key: "step5", label: "Step 5", ga4EventName: "checkout_step5" },
       { key: "purchase", label: "Purchase", ga4EventName: "purchase" },
     ],
     ecr: {

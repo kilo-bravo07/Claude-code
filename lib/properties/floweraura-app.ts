@@ -10,7 +10,7 @@ export const FLOWERAURA_APP: PropertyConfig = {
   shopping: {
     root: { key: "sessionStart", label: "Session Start", ga4EventName: "session_start" },
     stages: [
-      { key: "productView", label: "Product View", ga4EventName: "Product_view" },
+      { key: "productView", label: "Product View", ga4EventName: "view_item" },
       { key: "buyNow", label: "Buy Now / ATC", ga4EventName: "buy_now" },
       { key: "checkoutStep0", label: "Checkout", ga4EventName: "checkout_step0" },
       { key: "orderConfirmed", label: "TRX", ga4EventName: "order_confirmed" },
@@ -31,7 +31,7 @@ export const FLOWERAURA_APP: PropertyConfig = {
       { key: "step2", label: "Step 2", ga4EventName: "checkout_step2" },
       { key: "step3", label: "Step 3", ga4EventName: "checkout_step3" },
       { key: "step4", label: "Step 4", ga4EventName: "checkout_step4" },
-      { key: "payment", label: "Payment", ga4EventName: "Payment" },
+      { key: "payment", label: "Payment", ga4EventName: "payment" },
       { key: "orderConfirmed", label: "Order Confirmed", ga4EventName: "order_confirmed" },
     ],
     ecr: {
