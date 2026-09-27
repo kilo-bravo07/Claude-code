@@ -149,6 +149,33 @@ differently), edit the `ga4EventName` fields in that property's file directly �
 this, since the funnel *shape* (which events exist, in what order, with what labels) is inherently part of each
 property's definition, not a runtime setting.
 
+### Reproducing an existing GA4 segment (excluding traffic/pages/campaigns)
+
+If your current GA4 reporting isn't just "count these events" but applies extra conditions — excluding blog/content
+landing pages, certain ad campaigns, a specific traffic source, etc. — declare those as `baseFilters` on the
+relevant funnel in that property's config, e.g. (FlowerAura Web's shopping funnel):
+
+```ts
+shopping: {
+  // ...root, stages, ecr...
+  baseFilters: [
+    { dimension: "landingPage", match: "partial_regexp", value: "blog|/p/|quote|shayari", negate: true },
+    { dimension: "sessionCampaignName", match: "partial_regexp", value: "Branding|display|demand|video", negate: true },
+    { dimension: "sessionSourceMedium", match: "partial_regexp", value: "criteo", negate: true },
+  ],
+},
+```
+
+`dimension` is any GA4 API dimension name (e.g. `landingPage`, `sessionCampaignName`, `sessionSourceMedium`); `match`
+is `"full_regexp"`, `"partial_regexp"`, or `"contains"` (matching GA4's own filter match types); `negate: true` means
+"exclude rows matching this" (a NOT condition), matching is case-insensitive. **Shopping and checkout can declare
+different `baseFilters`** — the two funnels are always fetched as separate GA4 requests specifically so this is
+possible, so a property's checkout-side count for a shared event (e.g. `begin_checkout`) is never assumed to equal
+its shopping-side count once they apply different filters. Because of this, whenever a funnel's root or a stage
+event is shared with the other funnel AND either funnel declares `baseFilters`, give the two a distinct raw-counts
+`key` (see how `checkoutRoot` / `checkoutPurchase` are named separately from `beginCheckout` / `purchase` in
+FlowerAura Web's config) so one funnel's count is never silently overwritten by the other's.
+
 ## What's using mock data vs. real data today
 
 - **Everything, for every property, until you set that property's GA4 env vars** — this is by design so the whole

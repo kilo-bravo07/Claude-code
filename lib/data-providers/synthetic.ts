@@ -194,18 +194,15 @@ export function comboCounts(property: PropertyConfig, combo: Combo, iso: string)
     counts[metric.key] = Math.max(0, Math.round(rootCount * baseRateValue * (1 + noise)));
   });
 
-  // Checkout root: if it's literally the same event as one of the shopping
-  // stages (or the shopping root), reuse that already-computed count so the
-  // two funnel views stay internally consistent. Otherwise (Bakingo Web's
-  // checkout_step0, Bakingo App's checkout_initiated — genuinely separate
-  // events) derive it independently from its own baseline rate.
-  const checkoutRootKey = property.checkout.root.key;
-  let checkoutRootCount = counts[checkoutRootKey];
-  if (checkoutRootCount === undefined) {
-    const noise = (seededFloat(iso, "checkoutRoot") - 0.5) * 0.06;
-    checkoutRootCount = Math.max(0, Math.round(rootCount * profile.checkoutRootRate * (1 + noise)));
-    counts[checkoutRootKey] = checkoutRootCount;
-  }
+  // The checkout funnel's root is always derived independently from its own
+  // baseline rate, never reused from a shopping-stage count: its raw-counts
+  // key is guaranteed distinct by construction (see each property's config),
+  // since a property's checkout funnel can apply its own GA4 filter
+  // conditions and is not guaranteed to produce the same count as a
+  // same-named shopping stage even when both trace back to the same event.
+  const checkoutNoise = (seededFloat(iso, "checkoutRoot") - 0.5) * 0.06;
+  const checkoutRootCount = Math.max(0, Math.round(rootCount * profile.checkoutRootRate * (1 + checkoutNoise)));
+  counts[property.checkout.root.key] = checkoutRootCount;
 
   let prevCheckoutCount = checkoutRootCount;
   property.checkout.stages.forEach((stage) => {

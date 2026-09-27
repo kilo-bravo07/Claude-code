@@ -56,7 +56,7 @@ describe("FlowerAura Web — validation fixture (9/26/2026)", () => {
   });
 
   it("matches every reported checkout rate exactly (1207 -> 962 -> 830 -> 814 -> 732 -> 566)", () => {
-    const checkoutCounts: RawCounts = { beginCheckout: 1207, step2: 962, step3: 830, step4: 814, step5: 732, purchase: 566 };
+    const checkoutCounts: RawCounts = { checkoutRoot: 1207, step2: 962, step3: 830, step4: 814, step5: 732, checkoutPurchase: 566 };
     const checkoutStages = computeFunnel(FLOWERAURA_WEB.checkout, checkoutCounts);
     expect(pct(...checkoutStages.map((s) => s.rate!))).toEqual([79.7, 86.28, 98.07, 89.93, 77.32]);
     expect(Number(computeMetric(FLOWERAURA_WEB.checkout.ecr, checkoutCounts)!.toFixed(2))).toBe(46.89);
@@ -88,7 +88,7 @@ describe("FlowerAura App — validation fixture (9/26/2026)", () => {
 
   it("checkout funnel Step1..Step4/Payment/OrderConfirmed chain from checkout_step0", () => {
     const checkoutCounts: RawCounts = {
-      checkoutStep0: 386,
+      checkoutRoot: 386,
       step1: 353,
       step2: 305,
       step3: 297,

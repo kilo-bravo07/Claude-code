@@ -29,6 +29,26 @@ export interface MetricDefinition {
   description: string;
 }
 
+/**
+ * A GA4 dimension condition applied to every query for one funnel, on top of
+ * the eventName restriction and whatever dimension filters the user picked
+ * in the filter bar (device/country/city/source/medium). This is how a
+ * property's OWN GA4 reporting methodology — e.g. excluding blog landing
+ * pages or a specific ad platform's traffic — gets reproduced exactly,
+ * rather than approximated. Shopping and checkout funnels can (and for
+ * FlowerAura Web, do) declare different conditions, which is why the two
+ * funnels are always fetched as separate GA4 requests, never combined.
+ */
+export interface Ga4FilterCondition {
+  /** GA4 API dimension name, e.g. "landingPage", "sessionCampaignName", "sessionSourceMedium". */
+  dimension: string;
+  match: "full_regexp" | "partial_regexp" | "contains";
+  /** Regex alternation (e.g. "blog|/p/|quote|shayari") for the two regexp match types, or a plain substring for "contains". */
+  value: string;
+  /** true = exclude rows matching this condition (a "NOT" clause). Defaults to false (include only matches). */
+  negate?: boolean;
+}
+
 export interface FunnelDefinition {
   /** The funnel's entry point (denominator for the first stage's rate, and default ECR denominator). Not shown as its own KPI card — it's shown in the raw-counts / funnel-diagram "start" row. */
   root: FunnelStageConfig;
@@ -36,6 +56,8 @@ export interface FunnelDefinition {
   stages: FunnelStageConfig[];
   /** The funnel's headline ECR metric (always present). */
   ecr: MetricDefinition;
+  /** Extra GA4 filter conditions specific to this funnel's own reporting methodology (see Ga4FilterCondition). Omit/empty for "use the raw events as-is". */
+  baseFilters?: Ga4FilterCondition[];
 }
 
 /** A metric that isn't part of the sequential stage chain (e.g. FlowerAura App's "New ECR" ÷ ActiveUsers). */

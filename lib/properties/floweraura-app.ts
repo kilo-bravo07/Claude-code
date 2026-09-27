@@ -25,7 +25,12 @@ export const FLOWERAURA_APP: PropertyConfig = {
   },
 
   checkout: {
-    root: { key: "checkoutStep0", label: "Checkout Step 0", ga4EventName: "checkout_step0" },
+    // Renamed from "checkoutStep0" (shopping's stage key for the same event)
+    // so the two funnels never silently share a raw-counts slot — see
+    // FlowerAura Web's config for why that matters once a funnel declares
+    // its own baseFilters. No divergence is defined for FlowerAura App yet,
+    // but keeping the keys independent by construction costs nothing.
+    root: { key: "checkoutRoot", label: "Checkout Step 0", ga4EventName: "checkout_step0" },
     stages: [
       { key: "step1", label: "Step 1", ga4EventName: "checkout_step1" },
       { key: "step2", label: "Step 2", ga4EventName: "checkout_step2" },
@@ -38,7 +43,7 @@ export const FLOWERAURA_APP: PropertyConfig = {
       key: "checkoutEcr",
       label: "ECR",
       numeratorKey: "orderConfirmed",
-      denominatorKey: "checkoutStep0",
+      denominatorKey: "checkoutRoot",
       description: "Order Confirmed users / Checkout Step 0 users",
     },
   },

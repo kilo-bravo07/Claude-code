@@ -38,7 +38,7 @@ import type {
   FilterOptions,
   RawCounts,
 } from "../types";
-import type { PropertyConfig } from "../properties/types";
+import type { FunnelDefinition, Ga4FilterCondition, PropertyConfig } from "../properties/types";
 import type { DataProvider } from "./types";
 import { ga4Auth, getPropertyId } from "./ga4-config";
 
@@ -166,6 +166,30 @@ function dimensionFilterFor(filters: DimensionFilters): IFilterExpression | unde
   return { andGroup: { expressions } };
 }
 
+const MATCH_TYPE: Record<Ga4FilterCondition["match"], string> = {
+  full_regexp: "FULL_REGEXP",
+  partial_regexp: "PARTIAL_REGEXP",
+  contains: "CONTAINS",
+};
+
+/** Turns a property's own declared filter conditions (e.g. "exclude blog landing pages") into GA4 filter expressions, exactly reproducing that property's existing GA4 reporting segment rather than approximating it. */
+function baseFilterExpressions(conditions: Ga4FilterCondition[] | undefined): IFilterExpression[] {
+  if (!conditions?.length) return [];
+  return conditions.map((condition) => {
+    const expr: IFilterExpression = {
+      filter: {
+        fieldName: condition.dimension,
+        stringFilter: {
+          matchType: MATCH_TYPE[condition.match] as never,
+          value: condition.value,
+          caseSensitive: false,
+        },
+      },
+    };
+    return condition.negate ? { notExpression: expr } : expr;
+  });
+}
+
 function ga4OutputDimensionName(dimension: BreakdownDimension): string[] {
   switch (dimension) {
     case "ga4City":
@@ -179,45 +203,54 @@ function ga4OutputDimensionName(dimension: BreakdownDimension): string[] {
   }
 }
 
-/** Every distinct (key -> GA4 event name) this property's shopping+checkout funnels need, deduped by key (a key can be shared, e.g. a shopping stage that is also the checkout funnel's root). */
-function funnelEventKeys(property: PropertyConfig): { key: string; eventName: string }[] {
-  const map = new Map<string, string>();
-  map.set(property.shopping.root.key, property.shopping.root.ga4EventName);
-  property.shopping.stages.forEach((s) => map.set(s.key, s.ga4EventName));
-  map.set(property.checkout.root.key, property.checkout.root.ga4EventName);
-  property.checkout.stages.forEach((s) => map.set(s.key, s.ga4EventName));
-  return Array.from(map, ([key, eventName]) => ({ key, eventName }));
+/** The (key -> GA4 event name) map for one funnel only, deduped by key. */
+function funnelEventNameMap(funnel: FunnelDefinition): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  const add = (key: string, eventName: string) => {
+    const keys = map.get(eventName) ?? [];
+    keys.push(key);
+    map.set(eventName, keys);
+  };
+  add(funnel.root.key, funnel.root.ga4EventName);
+  funnel.stages.forEach((s) => add(s.key, s.ga4EventName));
+  return map;
 }
 
 /**
- * Fetches every funnel-stage count this property needs for one date
- * range/filter/breakdown combination in a SINGLE GA4 request (by
+ * Fetches one funnel's stage counts in a SINGLE GA4 request (by
  * dimensioning on "eventName" rather than issuing one request per event —
- * see the file header), plus one more request for extraMetrics (e.g.
- * FlowerAura App's ActiveUsers) if the property declares any.
+ * see the file header) with that funnel's own baseFilters applied. Shopping
+ * and checkout are always fetched separately (never combined into one
+ * request) because a property's two funnels can declare different GA4
+ * filter conditions — e.g. FlowerAura Web's checkout funnel excludes a
+ * narrower set of campaigns than its shopping funnel — so their event
+ * counts are not guaranteed to be reproducible from a shared query.
  */
-async function fetchCountsByKey(
-  property: PropertyConfig,
+async function fetchFunnelSlice(
+  propertyId: string,
+  funnel: FunnelDefinition,
   range: { start: string; end: string },
   filters: DimensionFilters,
   outputDimensions: string[],
 ): Promise<Map<string, RawCounts>> {
-  const propertyId = requirePropertyId(property);
+  const eventNameToKeys = funnelEventNameMap(funnel);
   const byKey = new Map<string, RawCounts>();
+  const eventNames = Array.from(eventNameToKeys.keys());
+  if (eventNames.length === 0) return byKey;
 
-  const eventNameToKeys = new Map<string, string[]>();
-  funnelEventKeys(property).forEach(({ key, eventName }) => {
-    const keys = eventNameToKeys.get(eventName) ?? [];
-    keys.push(key);
-    eventNameToKeys.set(eventName, keys);
-  });
+  const expressions: IFilterExpression[] = [
+    { filter: { fieldName: "eventName", inListFilter: { values: eventNames } } },
+    ...baseFilterExpressions(funnel.baseFilters),
+  ];
+  const userFilter = dimensionFilterFor(filters);
+  if (userFilter) expressions.push(userFilter);
 
   const response = await runReportQueued({
     property: `properties/${propertyId}`,
     dateRanges: [{ startDate: range.start, endDate: range.end }],
     dimensions: ["eventName", ...outputDimensions].map((name) => ({ name })),
     metrics: [{ name: "activeUsers" }],
-    dimensionFilter: dimensionFilterFor(filters),
+    dimensionFilter: { andGroup: { expressions } },
     limit: 100000,
   });
 
@@ -225,13 +258,42 @@ async function fetchCountsByKey(
     const values = (row.dimensionValues ?? []).map((d) => d.value ?? "(not set)");
     const [eventName, ...rest] = values;
     const keys = eventNameToKeys.get(eventName);
-    if (!keys) continue; // an event this property doesn't track — ignore
+    if (!keys) continue; // shouldn't happen given the inList filter, but be defensive
     const restKey = rest.join(" / ");
     const activeUsers = Number(row.metricValues?.[0]?.value ?? 0);
     const counts = byKey.get(restKey) ?? {};
     keys.forEach((key) => (counts[key] = activeUsers));
     byKey.set(restKey, counts);
   }
+
+  return byKey;
+}
+
+function mergeRawCountsMaps(maps: Map<string, RawCounts>[]): Map<string, RawCounts> {
+  const merged = new Map<string, RawCounts>();
+  for (const map of maps) {
+    for (const [key, counts] of map) {
+      merged.set(key, { ...(merged.get(key) ?? {}), ...counts });
+    }
+  }
+  return merged;
+}
+
+/** Fetches every funnel-stage count this property needs for one date range/filter/breakdown combination (shopping + checkout, each as their own request/filters — see fetchFunnelSlice), plus extraMetrics (e.g. FlowerAura App's ActiveUsers) if declared. */
+async function fetchCountsByKey(
+  property: PropertyConfig,
+  range: { start: string; end: string },
+  filters: DimensionFilters,
+  outputDimensions: string[],
+): Promise<Map<string, RawCounts>> {
+  const propertyId = requirePropertyId(property);
+
+  const [shoppingMap, checkoutMap] = await Promise.all([
+    fetchFunnelSlice(propertyId, property.shopping, range, filters, outputDimensions),
+    fetchFunnelSlice(propertyId, property.checkout, range, filters, outputDimensions),
+  ]);
+
+  const maps = [shoppingMap, checkoutMap];
 
   if (property.extraMetrics.length > 0) {
     const extraResponse = await runReportQueued({
@@ -242,16 +304,18 @@ async function fetchCountsByKey(
       dimensionFilter: dimensionFilterFor(filters),
       limit: 100000,
     });
+    const extraMap = new Map<string, RawCounts>();
     for (const row of extraResponse.rows ?? []) {
       const restKey = (row.dimensionValues ?? []).map((d) => d.value ?? "(not set)").join(" / ");
       const activeUsers = Number(row.metricValues?.[0]?.value ?? 0);
-      const counts = byKey.get(restKey) ?? {};
+      const counts: RawCounts = {};
       property.extraMetrics.forEach((m) => (counts[m.key] = activeUsers));
-      byKey.set(restKey, counts);
+      extraMap.set(restKey, counts);
     }
+    maps.push(extraMap);
   }
 
-  return byKey;
+  return mergeRawCountsMaps(maps);
 }
 
 function sumRawCounts(map: Map<string, RawCounts>): RawCounts {
@@ -270,9 +334,13 @@ async function itemDimensionCoverage(
   filters: DimensionFilters,
   eventName: string,
   ga4Dimension: string,
+  funnelBaseFilters: Ga4FilterCondition[] | undefined,
 ): Promise<number> {
   const propertyId = requirePropertyId(property);
-  const filterExpressions: IFilterExpression[] = [{ filter: { fieldName: "eventName", stringFilter: { value: eventName } } }];
+  const filterExpressions: IFilterExpression[] = [
+    { filter: { fieldName: "eventName", stringFilter: { value: eventName } } },
+    ...baseFilterExpressions(funnelBaseFilters),
+  ];
   const baseFilter = dimensionFilterFor(filters);
   if (baseFilter) filterExpressions.push(baseFilter);
 
@@ -353,16 +421,33 @@ export class Ga4DataProvider implements DataProvider {
 
   async getDataQuality(property: PropertyConfig, query: DashboardQuery): Promise<DataQualityCheckResult[]> {
     const counts = await this.getFunnelCounts(property, query);
-    const purchaseLikeEvent = property.checkout.stages.at(-1)?.ga4EventName ?? property.shopping.stages.at(-1)!.ga4EventName;
+    const checkoutLastStage = property.checkout.stages.at(-1);
+    const purchaseLikeEvent = checkoutLastStage?.ga4EventName ?? property.shopping.stages.at(-1)!.ga4EventName;
+    const purchaseLikeBaseFilters = checkoutLastStage ? property.checkout.baseFilters : property.shopping.baseFilters;
 
-    const itemIdCoverage = await itemDimensionCoverage(property, query.range, query.filters, purchaseLikeEvent, "itemId");
-    const itemCategoryCoverage = await itemDimensionCoverage(property, query.range, query.filters, purchaseLikeEvent, "itemCategory");
+    const itemIdCoverage = await itemDimensionCoverage(
+      property,
+      query.range,
+      query.filters,
+      purchaseLikeEvent,
+      "itemId",
+      purchaseLikeBaseFilters,
+    );
+    const itemCategoryCoverage = await itemDimensionCoverage(
+      property,
+      query.range,
+      query.filters,
+      purchaseLikeEvent,
+      "itemCategory",
+      purchaseLikeBaseFilters,
+    );
     const itemListNameCoverage = await itemDimensionCoverage(
       property,
       query.range,
       query.filters,
       property.shopping.stages[0].ga4EventName,
       "itemListName",
+      property.shopping.baseFilters,
     );
 
     const checkoutStagesWithData = property.checkout.stages.filter((s) => (counts[s.key] ?? 0) > 0).length;

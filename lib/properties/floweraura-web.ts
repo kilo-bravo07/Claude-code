@@ -22,24 +22,42 @@ export const FLOWERAURA_WEB: PropertyConfig = {
       denominatorKey: "sessionStart",
       description: "Purchase users / Session Start users",
     },
+    // Matches the exact segment used in the existing FlowerAura Web GA4
+    // reporting: exclude blog/quote/shayari content pages and non-shopping
+    // ad traffic (branding/display/demand/video campaigns, Criteo) from the
+    // shopping funnel.
+    baseFilters: [
+      { dimension: "landingPage", match: "partial_regexp", value: "blog|/p/|quote|shayari", negate: true },
+      { dimension: "sessionCampaignName", match: "partial_regexp", value: "Branding|display|demand|video", negate: true },
+      { dimension: "sessionSourceMedium", match: "partial_regexp", value: "criteo", negate: true },
+    ],
   },
 
   checkout: {
-    root: { key: "beginCheckout", label: "Begin Checkout", ga4EventName: "begin_checkout" },
+    // Renamed from the shopping funnel's "beginCheckout" stage key: the
+    // checkout funnel applies a NARROWER exclusion segment than shopping
+    // (see baseFilters below), so its begin_checkout count is not
+    // guaranteed to equal shopping's — they must not share a raw-counts key.
+    root: { key: "checkoutRoot", label: "Begin Checkout", ga4EventName: "begin_checkout" },
     stages: [
       { key: "step2", label: "Step 2", ga4EventName: "checkout_step2" },
       { key: "step3", label: "Step 3", ga4EventName: "checkout_step3" },
       { key: "step4", label: "Step 4", ga4EventName: "checkout_step4" },
       { key: "step5", label: "Step 5", ga4EventName: "checkout_step5" },
-      { key: "purchase", label: "Purchase", ga4EventName: "purchase" },
+      // Renamed from shopping's "purchase" for the same reason as the root above.
+      { key: "checkoutPurchase", label: "Purchase", ga4EventName: "purchase" },
     ],
     ecr: {
       key: "checkoutEcr",
       label: "Checkout ECR",
-      numeratorKey: "purchase",
-      denominatorKey: "beginCheckout",
+      numeratorKey: "checkoutPurchase",
+      denominatorKey: "checkoutRoot",
       description: "Purchase users / Begin Checkout users",
     },
+    baseFilters: [
+      { dimension: "landingPage", match: "partial_regexp", value: "blog|/p/", negate: true },
+      { dimension: "sessionCampaignName", match: "contains", value: "branding", negate: true },
+    ],
   },
 
   additionalMetrics: [],
@@ -60,7 +78,7 @@ export const FLOWERAURA_WEB: PropertyConfig = {
       step3: 830 / 962,
       step4: 814 / 830,
       step5: 732 / 814,
-      purchase: 566 / 732,
+      checkoutPurchase: 566 / 732,
     },
     storyCity: "Gurgaon",
   },
