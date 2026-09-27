@@ -36,26 +36,22 @@ export const DATA_QUALITY = {
 /** In-memory cache TTL for provider responses, in milliseconds. */
 export const CACHE_TTL_MS = 5 * 60 * 1000;
 
-export const SHOPPING_FUNNEL_STAGES = [
-  { key: "viewItem", label: "View Item" },
-  { key: "addToCart", label: "Add to Cart" },
-  { key: "checkout", label: "Checkout" },
-  { key: "purchase", label: "Purchase" },
-] as const;
-
-export const CHECKOUT_FUNNEL_STAGES = [
-  { key: "step2", label: "Step 2" },
-  { key: "step3", label: "Step 3" },
-  { key: "step4", label: "Step 4" },
-  { key: "step5", label: "Step 5" },
-  { key: "purchase", label: "Purchase" },
-] as const;
+// Funnel shapes are no longer hardcoded here — each property defines its own
+// shopping/checkout FunnelDefinition in lib/properties/*.ts, since the four
+// GA4 properties this dashboard supports have genuinely different funnels
+// (different event names, different stage counts, different labels).
 
 export const BREAKDOWN_DIMENSIONS = [
   { key: "ga4City", label: "GA4 City" },
   { key: "country", label: "Country" },
-  { key: "platform", label: "Platform" },
   { key: "device", label: "Device" },
-  { key: "brand", label: "Brand" },
   { key: "trafficSourceMedium", label: "Source / Medium" },
 ] as const;
+
+/**
+ * A sequential funnel stage converting at >100% (numerator > denominator) is
+ * never capped or silently corrected — see lib/metrics.ts. It is always
+ * surfaced as a data-quality warning instead, using this exact wording.
+ */
+export const OVER_100_PERCENT_WARNING =
+  "Step conversion >100% — investigate event/user counting methodology.";

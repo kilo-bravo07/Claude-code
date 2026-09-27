@@ -10,23 +10,23 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { computeCheckoutEcr, computeShoppingEcr } from "@/lib/metrics";
+import { computeMetric } from "@/lib/metrics";
 import type { DailyTrendPoint } from "@/lib/types";
+import type { MetricDefinition } from "@/lib/properties/types";
 
 interface Props {
   points: DailyTrendPoint[];
   comparisonPoints: DailyTrendPoint[] | null;
   comparisonLabel: string;
-  metric: "shopping" | "checkout";
+  metricLabel: string;
+  metric: MetricDefinition;
 }
 
-export function DailyTrendChart({ points, comparisonPoints, comparisonLabel, metric }: Props) {
-  const ecrFn = metric === "shopping" ? computeShoppingEcr : computeCheckoutEcr;
-
+export function DailyTrendChart({ points, comparisonPoints, comparisonLabel, metricLabel, metric }: Props) {
   const data = points.map((p, i) => ({
     date: p.date.slice(5),
-    current: ecrFn(p.counts),
-    comparison: comparisonPoints?.[i] ? ecrFn(comparisonPoints[i].counts) : null,
+    current: computeMetric(metric, p.counts),
+    comparison: comparisonPoints?.[i] ? computeMetric(metric, comparisonPoints[i].counts) : null,
   }));
 
   const values = data.flatMap((d) => [d.current, d.comparison]).filter((v): v is number => v !== null);
@@ -54,7 +54,7 @@ export function DailyTrendChart({ points, comparisonPoints, comparisonLabel, met
         <Line
           type="monotone"
           dataKey="current"
-          name={metric === "shopping" ? "Shopping ECR" : "Checkout ECR"}
+          name={metricLabel}
           stroke="#111418"
           strokeWidth={2}
           dot={false}

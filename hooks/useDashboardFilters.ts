@@ -3,14 +3,16 @@
 import { useCallback, useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { parseFilterState, serializeFilterState, type FilterState } from "@/lib/query-state";
+import type { PropertyKey } from "@/lib/properties/types";
 import type { ComparisonMode, DateRange, DimensionFilters } from "@/lib/types";
 
 /**
- * Single source of truth for all global filters (spec section 8): backed by
- * the URL query string, so it survives navigation between Overview /
- * Shopping / Checkout and is shareable/bookmarkable. Every page reads the
- * same hook, so changing a filter on one page updates every section that
- * uses it, everywhere.
+ * Single source of truth for all global filters, including which GA4
+ * property is selected: backed by the URL query string, so it survives
+ * navigation between Overview / Shopping / Checkout and is
+ * shareable/bookmarkable. Every page reads the same hook, so changing the
+ * property or a filter on one page updates every section that uses it,
+ * everywhere.
  */
 export function useDashboardFilters() {
   const router = useRouter();
@@ -25,6 +27,14 @@ export function useDashboardFilters() {
       router.replace(`${pathname}?${params.toString()}`, { scroll: false });
     },
     [router, pathname],
+  );
+
+  const setProperty = useCallback(
+    // Switching property clears dimension filters — a filter value picked
+    // for one property (e.g. a GA4 City) may not exist, or mean the same
+    // thing, on another property's data.
+    (property: PropertyKey) => push({ ...state, property, filters: {} }),
+    [push, state],
   );
 
   const setRange = useCallback((range: DateRange) => push({ ...state, range }), [push, state]);
@@ -42,5 +52,5 @@ export function useDashboardFilters() {
 
   const resetFilters = useCallback(() => push({ ...state, filters: {} }), [push, state]);
 
-  return { ...state, setRange, setComparisonMode, setFilterValues, resetFilters };
+  return { ...state, setProperty, setRange, setComparisonMode, setFilterValues, resetFilters };
 }

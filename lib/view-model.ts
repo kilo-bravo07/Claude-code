@@ -1,10 +1,11 @@
 /**
  * Assembles the current + D-7 + D-365 comparisons a KPI card needs from
- * three FunnelCounts snapshots. Pure presentation glue over lib/metrics.ts —
+ * three RawCounts snapshots. Pure presentation glue over lib/metrics.ts —
  * still no formulas live here, just wiring.
  */
-import { compareRates } from "./metrics";
-import type { FunnelCounts, FunnelStageResult, MetricChange } from "./types";
+import { compareRates, computeFunnel, computeMetric } from "./metrics";
+import type { FunnelDefinition, MetricDefinition } from "./properties/types";
+import type { MetricChange, RawCounts } from "./types";
 
 export interface StageCardModel {
   key: string;
@@ -17,14 +18,14 @@ export interface StageCardModel {
 }
 
 export function buildStageCards(
-  computeFn: (c: FunnelCounts) => FunnelStageResult[],
-  current: FunnelCounts,
-  d7: FunnelCounts | null,
-  d365: FunnelCounts | null,
+  funnel: FunnelDefinition,
+  current: RawCounts,
+  d7: RawCounts | null,
+  d365: RawCounts | null,
 ): StageCardModel[] {
-  const currentStages = computeFn(current);
-  const d7Stages = d7 ? computeFn(d7) : null;
-  const d365Stages = d365 ? computeFn(d365) : null;
+  const currentStages = computeFunnel(funnel, current);
+  const d7Stages = d7 ? computeFunnel(funnel, d7) : null;
+  const d365Stages = d365 ? computeFunnel(funnel, d365) : null;
 
   return currentStages.map((stage, i) => ({
     key: stage.key,
@@ -37,23 +38,20 @@ export function buildStageCards(
   }));
 }
 
-export function buildEcrCard(
-  ecrFn: (c: FunnelCounts) => number | null,
-  label: string,
-  current: FunnelCounts,
-  d7: FunnelCounts | null,
-  d365: FunnelCounts | null,
-  numeratorUsers: number,
-  denominatorUsers: number,
+export function buildMetricCard(
+  metric: MetricDefinition,
+  current: RawCounts,
+  d7: RawCounts | null,
+  d365: RawCounts | null,
 ): StageCardModel {
-  const rate = ecrFn(current);
+  const rateValue = computeMetric(metric, current);
   return {
-    key: "ecr",
-    label,
-    rate,
-    numeratorUsers,
-    denominatorUsers,
-    vsD7: compareRates(rate, d7 ? ecrFn(d7) : null),
-    vsD365: compareRates(rate, d365 ? ecrFn(d365) : null),
+    key: metric.key,
+    label: metric.label,
+    rate: rateValue,
+    numeratorUsers: current[metric.numeratorKey] ?? 0,
+    denominatorUsers: current[metric.denominatorKey] ?? 0,
+    vsD7: compareRates(rateValue, d7 ? computeMetric(metric, d7) : null),
+    vsD365: compareRates(rateValue, d365 ? computeMetric(metric, d365) : null),
   };
 }

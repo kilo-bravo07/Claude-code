@@ -1,17 +1,24 @@
-import { computeCheckoutFunnel, computeShoppingFunnel } from "@/lib/metrics";
-import type { FunnelCounts } from "@/lib/types";
+import { computeFunnel } from "@/lib/metrics";
+import type { RawCounts } from "@/lib/types";
+import type { PropertyConfig } from "@/lib/properties/types";
 import { FunnelDiagram } from "./FunnelDiagram";
 
-export function ShoppingFunnelViz({ counts }: { counts: FunnelCounts }) {
-  return <FunnelDiagram startLabel="Session Start" startUsers={counts.sessionStartUsers} stages={computeShoppingFunnel(counts)} />;
-}
-
-export function CheckoutFunnelViz({ counts }: { counts: FunnelCounts }) {
+export function ShoppingFunnelViz({ property, counts }: { property: PropertyConfig; counts: RawCounts }) {
   return (
     <FunnelDiagram
-      startLabel="Begin Checkout"
-      startUsers={counts.beginCheckoutUsers}
-      stages={computeCheckoutFunnel(counts)}
+      startLabel={property.shopping.root.label}
+      startUsers={counts[property.shopping.root.key] ?? 0}
+      stages={computeFunnel(property.shopping, counts)}
+    />
+  );
+}
+
+export function CheckoutFunnelViz({ property, counts }: { property: PropertyConfig; counts: RawCounts }) {
+  return (
+    <FunnelDiagram
+      startLabel={property.checkout.root.label}
+      startUsers={counts[property.checkout.root.key] ?? 0}
+      stages={computeFunnel(property.checkout, counts)}
     />
   );
 }

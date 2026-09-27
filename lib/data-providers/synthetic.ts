@@ -7,45 +7,30 @@
  * response with mode: "mock" and the UI renders a persistent "Demo Data"
  * badge whenever that mode is active.
  *
- * Generation is a pure function of (date, dimension combo): nothing is
- * cached or mutated, so results are 100% reproducible and cheap to compute
- * only for the slice a request actually needs.
+ * Generic across all four properties: it walks whatever funnel shape and
+ * baseline rates a property's `mockProfile` declares (lib/properties/*.ts)
+ * rather than assuming a fixed stage list. Generation is a pure function of
+ * (property, date, dimension combo): nothing is cached or mutated, so
+ * results are 100% reproducible and cheap to compute only for the slice a
+ * request actually needs.
  */
-import { addDays, daysBetween, formatIsoDate, parseIsoDate, today } from "../date-utils";
-import type { DimensionFilters, FunnelCounts } from "../types";
+import { addDays, daysBetween, parseIsoDate, today } from "../date-utils";
+import type { DimensionFilters, RawCounts } from "../types";
+import type { PropertyConfig } from "../properties/types";
 
 export interface Combo {
-  brand: string;
-  brandMult: number;
-  brandShare: number;
-  platform: string;
-  device: string;
-  platformDeviceMult: number;
-  platformDeviceShare: number;
   country: string;
   ga4City: string;
   countryCityMult: number;
   countryCityShare: number;
+  device: string;
+  deviceMult: number;
+  deviceShare: number;
   trafficSource: string;
   trafficMedium: string;
   sourceMediumMult: number;
   sourceMediumShare: number;
 }
-
-const BRANDS = [
-  { value: "Bakingo", share: 0.85, mult: 1.0 },
-  { value: "Bakingo International", share: 0.15, mult: 0.9 },
-];
-
-const PLATFORM_DEVICE = [
-  { platform: "Web", device: "desktop", share: 0.2, mult: 1.05 },
-  { platform: "Web", device: "mobile", share: 0.3, mult: 0.95 },
-  { platform: "Web", device: "tablet", share: 0.05, mult: 1.0 },
-  { platform: "Android App", device: "mobile", share: 0.25, mult: 1.15 },
-  { platform: "Android App", device: "tablet", share: 0.03, mult: 1.1 },
-  { platform: "iOS App", device: "mobile", share: 0.15, mult: 1.2 },
-  { platform: "iOS App", device: "tablet", share: 0.02, mult: 1.15 },
-];
 
 const COUNTRY_CITY = [
   { country: "India", ga4City: "Delhi", share: 0.18, mult: 1.05 },
@@ -57,6 +42,12 @@ const COUNTRY_CITY = [
   { country: "United States", ga4City: "Other", share: 0.08, mult: 0.85 },
   { country: "United Arab Emirates", ga4City: "Other", share: 0.06, mult: 0.9 },
   { country: "United Kingdom", ga4City: "Other", share: 0.06, mult: 0.88 },
+];
+
+const DEVICE = [
+  { device: "mobile", share: 0.6, mult: 0.97 },
+  { device: "desktop", share: 0.3, mult: 1.06 },
+  { device: "tablet", share: 0.1, mult: 1.0 },
 ];
 
 const SOURCE_MEDIUM = [
@@ -73,28 +64,22 @@ let cachedCombos: Combo[] | null = null;
 export function buildCombos(): Combo[] {
   if (cachedCombos) return cachedCombos;
   const combos: Combo[] = [];
-  for (const b of BRANDS) {
-    for (const pd of PLATFORM_DEVICE) {
-      for (const cc of COUNTRY_CITY) {
-        for (const sm of SOURCE_MEDIUM) {
-          combos.push({
-            brand: b.value,
-            brandMult: b.mult,
-            brandShare: b.share,
-            platform: pd.platform,
-            device: pd.device,
-            platformDeviceMult: pd.mult,
-            platformDeviceShare: pd.share,
-            country: cc.country,
-            ga4City: cc.ga4City,
-            countryCityMult: cc.mult,
-            countryCityShare: cc.share,
-            trafficSource: sm.trafficSource,
-            trafficMedium: sm.trafficMedium,
-            sourceMediumMult: sm.mult,
-            sourceMediumShare: sm.share,
-          });
-        }
+  for (const cc of COUNTRY_CITY) {
+    for (const d of DEVICE) {
+      for (const sm of SOURCE_MEDIUM) {
+        combos.push({
+          country: cc.country,
+          ga4City: cc.ga4City,
+          countryCityMult: cc.mult,
+          countryCityShare: cc.share,
+          device: d.device,
+          deviceMult: d.mult,
+          deviceShare: d.share,
+          trafficSource: sm.trafficSource,
+          trafficMedium: sm.trafficMedium,
+          sourceMediumMult: sm.mult,
+          sourceMediumShare: sm.share,
+        });
       }
     }
   }
@@ -103,11 +88,9 @@ export function buildCombos(): Combo[] {
 }
 
 export function comboMatchesFilters(combo: Combo, filters: DimensionFilters): boolean {
-  if (filters.brand?.length && !filters.brand.includes(combo.brand)) return false;
-  if (filters.platform?.length && !filters.platform.includes(combo.platform)) return false;
-  if (filters.device?.length && !filters.device.includes(combo.device)) return false;
   if (filters.country?.length && !filters.country.includes(combo.country)) return false;
   if (filters.ga4City?.length && !filters.ga4City.includes(combo.ga4City)) return false;
+  if (filters.device?.length && !filters.device.includes(combo.device)) return false;
   if (filters.trafficSource?.length && !filters.trafficSource.includes(combo.trafficSource)) return false;
   if (filters.trafficMedium?.length && !filters.trafficMedium.includes(combo.trafficMedium)) return false;
   return true;
@@ -127,7 +110,6 @@ function hashString(str: string): number {
 /** Deterministic float in [0, 1) derived from arbitrary string parts. */
 function seededFloat(...parts: (string | number)[]): number {
   const seed = hashString(parts.join("|"));
-  // mulberry32 single-step
   let t = (seed + 0x6d2b79f5) | 0;
   t = Math.imul(t ^ (t >>> 15), t | 1);
   t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
@@ -146,20 +128,6 @@ function offsetFromToday(iso: string): number {
   return daysBetween(iso, today());
 }
 
-interface DateBaseline {
-  sessionStart: number;
-  viewItemRate: number;
-  addToCartRate: number;
-  checkoutRate: number;
-  purchaseRate: number;
-  step2Rate: number;
-  step3Rate: number;
-  step4Rate: number;
-  step5Rate: number;
-  checkoutPurchaseRate: number;
-  avgOrderValue: number;
-}
-
 const RECENT_DIP_WINDOW_DAYS = 14;
 
 function recentDipStrength(iso: string): number {
@@ -170,91 +138,89 @@ function recentDipStrength(iso: string): number {
   return 1 - offset / RECENT_DIP_WINDOW_DAYS;
 }
 
-function dateBaseline(iso: string): DateBaseline {
-  const angle = dayAngle(iso);
-  const weekday = parseIsoDate(iso).getUTCDay();
-  const noise = (parts: string) => (seededFloat(iso, parts) - 0.5) * 0.04;
-  const daysSinceEpoch = daysBetween("2024-01-01", iso);
-  const growthTrend = 1 + daysSinceEpoch * 0.00012; // slow YoY-ish growth
-  const dip = recentDipStrength(iso);
-
-  const sessionStart = Math.round(
-    10300 * WEEKDAY_FACTOR[weekday] * growthTrend * (1 + 0.05 * Math.sin(angle)) * (1 + noise("vol")),
-  );
-
-  return {
-    sessionStart,
-    viewItemRate: clamp(0.31 + 0.02 * Math.sin(angle + 1) + noise("vi"), 0.2, 0.45),
-    addToCartRate: clamp(0.38 + 0.02 * Math.cos(angle) + noise("atc"), 0.25, 0.55),
-    checkoutRate: clamp(0.91 + noise("co") * 0.5 - dip * 0.02, 0.8, 0.97),
-    purchaseRate: clamp(0.47 + 0.015 * Math.sin(angle - 1) + noise("pu") - dip * 0.05, 0.3, 0.6),
-    step2Rate: clamp(0.8 + noise("s2") - dip * 0.03, 0.65, 0.92),
-    step3Rate: clamp(0.86 + noise("s3") - dip * 0.02, 0.7, 0.95),
-    step4Rate: clamp(0.98 + noise("s4") * 0.3, 0.9, 1.0),
-    step5Rate: clamp(0.9 + noise("s5") - dip * 0.02, 0.75, 0.97),
-    checkoutPurchaseRate: clamp(0.77 + noise("cp") - dip * 0.06, 0.55, 0.9),
-    avgOrderValue: Math.round(1450 + 80 * Math.sin(angle) + seededFloat(iso, "aov") * 60),
-  };
-}
-
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
 
-/** Extra deterioration applied on top of the base recent dip, targeted at specific dimension
- *  values so the "where did ECR drop?" section has a real story to surface. Demo-only. */
-function comboDipMultiplier(combo: Combo, iso: string): number {
+function volumeFactor(iso: string): number {
+  const angle = dayAngle(iso);
+  const weekday = parseIsoDate(iso).getUTCDay();
+  const daysSinceEpoch = daysBetween("2024-01-01", iso);
+  const growthTrend = 1 + daysSinceEpoch * 0.00012;
+  const noise = (seededFloat(iso, "vol") - 0.5) * 0.06;
+  return WEEKDAY_FACTOR[weekday] * growthTrend * (1 + 0.05 * Math.sin(angle)) * (1 + noise);
+}
+
+/** Extra deterioration applied on top of the base recent dip, targeted at the property's "story city" if it has one, so "Where did ECR drop?" has a real story to surface. Demo-only. */
+function comboDipMultiplier(property: PropertyConfig, combo: Combo, iso: string): number {
   const dip = recentDipStrength(iso);
   if (dip === 0) return 1;
-  let mult = 1;
-  if (combo.platform === "Android App") mult *= 1 - 0.06 * dip;
-  if (combo.ga4City === "Gurgaon") mult *= 1 - 0.05 * dip;
+  let mult = 1 - 0.03 * dip; // small uniform dip everywhere
+  if (property.mockProfile.storyCity && combo.ga4City === property.mockProfile.storyCity) {
+    mult *= 1 - 0.05 * dip;
+  }
   return mult;
 }
 
-export function comboCounts(combo: Combo, iso: string): FunnelCounts {
-  const base = dateBaseline(iso);
-  const shareMult = combo.brandShare * combo.platformDeviceShare * combo.countryCityShare * combo.sourceMediumShare;
-  const rateMult = combo.brandMult * combo.platformDeviceMult * combo.countryCityMult * combo.sourceMediumMult;
-  const dipMult = comboDipMultiplier(combo, iso);
+/** Computes one dimension-combo's raw counts for one property on one date — both shopping and checkout funnels, plus any extra metrics. */
+export function comboCounts(property: PropertyConfig, combo: Combo, iso: string): RawCounts {
+  const profile = property.mockProfile;
+  const shareMult = combo.countryCityShare * combo.deviceShare * combo.sourceMediumShare;
+  const rateMult = combo.countryCityMult * combo.deviceMult * combo.sourceMediumMult;
+  const dipMult = comboDipMultiplier(property, combo, iso);
 
-  const sessionStartUsers = Math.max(0, Math.round(base.sessionStart * shareMult));
-  const viewItemUsers = Math.round(sessionStartUsers * clamp(base.viewItemRate * rateMult, 0, 1));
-  const addToCartUsers = Math.round(viewItemUsers * clamp(base.addToCartRate * rateMult, 0, 1));
-  const beginCheckoutUsers = Math.round(addToCartUsers * clamp(base.checkoutRate * rateMult * dipMult, 0, 1));
+  const counts: RawCounts = {};
+  const rootCount = Math.max(0, Math.round(profile.baseRootVolume * volumeFactor(iso) * shareMult));
+  counts[property.shopping.root.key] = rootCount;
 
-  const checkoutStep2Users = Math.round(beginCheckoutUsers * clamp(base.step2Rate * dipMult, 0, 1));
-  const checkoutStep3Users = Math.round(checkoutStep2Users * clamp(base.step3Rate * dipMult, 0, 1));
-  const checkoutStep4Users = Math.round(checkoutStep3Users * clamp(base.step4Rate, 0, 1));
-  const checkoutStep5Users = Math.round(checkoutStep4Users * clamp(base.step5Rate * dipMult, 0, 1));
-  const purchaseUsers = Math.round(checkoutStep5Users * clamp(base.checkoutPurchaseRate * dipMult, 0, 1));
+  let prevCount = rootCount;
+  property.shopping.stages.forEach((stage, i) => {
+    const baseRateValue = profile.shoppingStageRates[stage.key] ?? 0.5;
+    const noise = (seededFloat(iso, "shop", stage.key) - 0.5) * 0.06;
+    const isLateStage = i >= property.shopping.stages.length - 2;
+    const effectiveRate = clamp(
+      baseRateValue * rateMult * (1 + noise) * (isLateStage ? dipMult : 1),
+      0,
+      Math.max(1, baseRateValue * 1.3),
+    );
+    const count = Math.round(prevCount * effectiveRate);
+    counts[stage.key] = count;
+    prevCount = count;
+  });
 
-  const transactions = Math.round(purchaseUsers * 1.02);
-  const revenue = Math.round(purchaseUsers * base.avgOrderValue);
+  property.extraMetrics.forEach((metric) => {
+    const baseRateValue = profile.extraMetricRates?.[metric.key] ?? 1;
+    const noise = (seededFloat(iso, "extra", metric.key) - 0.5) * 0.04;
+    counts[metric.key] = Math.max(0, Math.round(rootCount * baseRateValue * (1 + noise)));
+  });
 
-  return {
-    sessionStartUsers,
-    viewItemUsers,
-    addToCartUsers,
-    beginCheckoutUsers,
-    checkoutStep2Users,
-    checkoutStep3Users,
-    checkoutStep4Users,
-    checkoutStep5Users,
-    purchaseUsers,
-    revenue,
-    transactions,
-  };
+  // Checkout root: if it's literally the same event as one of the shopping
+  // stages (or the shopping root), reuse that already-computed count so the
+  // two funnel views stay internally consistent. Otherwise (Bakingo Web's
+  // checkout_step0, Bakingo App's checkout_initiated — genuinely separate
+  // events) derive it independently from its own baseline rate.
+  const checkoutRootKey = property.checkout.root.key;
+  let checkoutRootCount = counts[checkoutRootKey];
+  if (checkoutRootCount === undefined) {
+    const noise = (seededFloat(iso, "checkoutRoot") - 0.5) * 0.06;
+    checkoutRootCount = Math.max(0, Math.round(rootCount * profile.checkoutRootRate * (1 + noise)));
+    counts[checkoutRootKey] = checkoutRootCount;
+  }
+
+  let prevCheckoutCount = checkoutRootCount;
+  property.checkout.stages.forEach((stage) => {
+    const baseRateValue = profile.checkoutStageRates[stage.key] ?? 0.85;
+    const noise = (seededFloat(iso, "checkout", stage.key) - 0.5) * 0.05;
+    const effectiveRate = clamp(baseRateValue * (1 + noise) * dipMult, 0, Math.max(1.2, baseRateValue * 1.3));
+    const count = Math.round(prevCheckoutCount * effectiveRate);
+    counts[stage.key] = count;
+    prevCheckoutCount = count;
+  });
+
+  return counts;
 }
 
 export function demoDataRange(): { start: string; end: string } {
   const end = today();
   return { start: addDays(end, -DEMO_DATA_START_OFFSET_DAYS), end };
 }
-
-export function isWithinDemoRange(iso: string): boolean {
-  const { start, end } = demoDataRange();
-  return iso >= start && iso <= end;
-}
-
-export { formatIsoDate };

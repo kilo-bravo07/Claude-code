@@ -4,7 +4,10 @@ import { useDashboardFilters } from "@/hooks/useDashboardFilters";
 import { useChangeUnit } from "@/hooks/useChangeUnit";
 import { useApiData } from "@/hooks/useApiData";
 import { MultiSelect } from "./MultiSelect";
+import { PropertySelector } from "./PropertySelector";
 import { addDays, today } from "@/lib/date-utils";
+import { getProperty } from "@/lib/properties";
+import { FILTER_LABELS } from "@/lib/properties/types";
 import type { FilterOptionsResponse } from "@/lib/api-types";
 import type { ComparisonMode } from "@/lib/types";
 
@@ -15,17 +18,23 @@ const COMPARISON_OPTIONS: { value: ComparisonMode; label: string }[] = [
 ];
 
 export function FilterBar() {
-  const { range, filters, comparisonMode, setRange, setComparisonMode, setFilterValues, resetFilters } =
+  const { property: propertyKey, range, filters, comparisonMode, setProperty, setRange, setComparisonMode, setFilterValues, resetFilters } =
     useDashboardFilters();
+  const property = getProperty(propertyKey);
   const { unit, setUnit } = useChangeUnit();
-  const optionsState = useApiData<FilterOptionsResponse>("/api/filter-options");
+  const optionsState = useApiData<FilterOptionsResponse>(`/api/filter-options?property=${propertyKey}`);
   const options = optionsState.status === "success" ? optionsState.data : null;
 
   const hasActiveFilters = Object.values(filters).some((v) => v?.length);
   const isSingleDay = range.start === range.end;
+  const available = new Set(property.availableFilters);
 
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2 rounded border border-ink-100 bg-ink-100/40 p-3">
+      <PropertySelector value={propertyKey} onChange={setProperty} />
+
+      <div className="h-5 w-px bg-ink-100" />
+
       <div className="flex items-center gap-1.5">
         <label className="text-xs text-ink-500">From</label>
         <input
@@ -81,48 +90,48 @@ export function FilterBar() {
 
       <div className="h-5 w-px bg-ink-100" />
 
-      <MultiSelect
-        label="Brand"
-        options={options?.brands ?? []}
-        selected={filters.brand ?? []}
-        onChange={(v) => setFilterValues("brand", v)}
-      />
-      <MultiSelect
-        label="Platform"
-        options={options?.platforms ?? []}
-        selected={filters.platform ?? []}
-        onChange={(v) => setFilterValues("platform", v)}
-      />
-      <MultiSelect
-        label="Device"
-        options={options?.devices ?? []}
-        selected={filters.device ?? []}
-        onChange={(v) => setFilterValues("device", v)}
-      />
-      <MultiSelect
-        label="Country"
-        options={options?.countries ?? []}
-        selected={filters.country ?? []}
-        onChange={(v) => setFilterValues("country", v)}
-      />
-      <MultiSelect
-        label="GA4 City"
-        options={options?.ga4Cities ?? []}
-        selected={filters.ga4City ?? []}
-        onChange={(v) => setFilterValues("ga4City", v)}
-      />
-      <MultiSelect
-        label="Source"
-        options={options?.trafficSources ?? []}
-        selected={filters.trafficSource ?? []}
-        onChange={(v) => setFilterValues("trafficSource", v)}
-      />
-      <MultiSelect
-        label="Medium"
-        options={options?.trafficMediums ?? []}
-        selected={filters.trafficMedium ?? []}
-        onChange={(v) => setFilterValues("trafficMedium", v)}
-      />
+      {/* Only render a filter control this property actually declares support for (spec section 15) — a
+          disabled/missing dimension is hidden entirely rather than shown broken. */}
+      {available.has("ga4City") && (
+        <MultiSelect
+          label={FILTER_LABELS.ga4City}
+          options={options?.ga4Cities ?? []}
+          selected={filters.ga4City ?? []}
+          onChange={(v) => setFilterValues("ga4City", v)}
+        />
+      )}
+      {available.has("country") && (
+        <MultiSelect
+          label={FILTER_LABELS.country}
+          options={options?.countries ?? []}
+          selected={filters.country ?? []}
+          onChange={(v) => setFilterValues("country", v)}
+        />
+      )}
+      {available.has("device") && (
+        <MultiSelect
+          label={FILTER_LABELS.device}
+          options={options?.devices ?? []}
+          selected={filters.device ?? []}
+          onChange={(v) => setFilterValues("device", v)}
+        />
+      )}
+      {available.has("trafficSource") && (
+        <MultiSelect
+          label="Source"
+          options={options?.trafficSources ?? []}
+          selected={filters.trafficSource ?? []}
+          onChange={(v) => setFilterValues("trafficSource", v)}
+        />
+      )}
+      {available.has("trafficMedium") && (
+        <MultiSelect
+          label="Medium"
+          options={options?.trafficMediums ?? []}
+          selected={filters.trafficMedium ?? []}
+          onChange={(v) => setFilterValues("trafficMedium", v)}
+        />
+      )}
 
       {hasActiveFilters && (
         <button onClick={resetFilters} className="rounded border border-ink-300 px-2 py-1 text-xs text-ink-700 hover:bg-white">

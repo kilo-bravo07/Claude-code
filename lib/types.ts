@@ -1,53 +1,17 @@
 /**
- * Normalized reporting model.
+ * Normalized reporting model — generic across all four GA4 properties.
  *
- * One row = one (date, dimension-combination) bucket of GA4 event-based user
- * counts. All derived metrics (funnel %, ECR, pp change, etc.) are computed
- * centrally in lib/metrics.ts from these raw counts — never re-derived ad
- * hoc in a component.
+ * Unlike the original single-property version, raw counts are no longer a
+ * fixed set of named fields (sessionStartUsers, viewItemUsers, ...): each
+ * property defines its own funnel shape (lib/properties/*.ts), so raw counts
+ * are a dynamic bag keyed by whatever stage/root/extra-metric keys that
+ * property declares. `lib/metrics.ts` reads this bag using the property's
+ * FunnelDefinition — it never assumes a fixed shape.
  */
-export interface ReportingRow {
-  date: string; // ISO yyyy-mm-dd
-  brand: string;
-  platform: string; // e.g. "Web", "Android App", "iOS App"
-  device: string; // e.g. "mobile", "desktop", "tablet"
-  country: string;
-  /** GA4's own user/traffic geo city. NOT the delivery destination — see DIMENSIONS.md */
-  ga4City: string;
-  /** Reserved for a future non-GA4 delivery-destination data source. Null until wired up. */
-  deliveryCity: string | null;
-  trafficSource: string;
-  trafficMedium: string;
+import type { FilterKey, PropertyKey } from "./properties/types";
 
-  sessionStartUsers: number;
-  viewItemUsers: number;
-  addToCartUsers: number;
-  beginCheckoutUsers: number;
-  checkoutStep2Users: number;
-  checkoutStep3Users: number;
-  checkoutStep4Users: number;
-  checkoutStep5Users: number;
-  purchaseUsers: number;
-
-  revenue: number;
-  transactions: number;
-}
-
-/** Aggregated bucket of raw counts, summed across whatever rows matched a query. */
-export type FunnelCounts = Pick<
-  ReportingRow,
-  | "sessionStartUsers"
-  | "viewItemUsers"
-  | "addToCartUsers"
-  | "beginCheckoutUsers"
-  | "checkoutStep2Users"
-  | "checkoutStep3Users"
-  | "checkoutStep4Users"
-  | "checkoutStep5Users"
-  | "purchaseUsers"
-  | "revenue"
-  | "transactions"
->;
+/** Dynamic bag of raw counts keyed by funnel stage/root/extra-metric key (plus the conventional "revenue"/"transactions" keys when available). */
+export type RawCounts = Record<string, number>;
 
 export interface DateRange {
   start: string; // ISO yyyy-mm-dd, inclusive
@@ -56,28 +20,16 @@ export interface DateRange {
 
 export type ComparisonMode = "d7" | "d365" | "none";
 
-export interface DimensionFilters {
-  brand?: string[];
-  platform?: string[];
-  device?: string[];
-  country?: string[];
-  ga4City?: string[];
-  trafficSource?: string[];
-  trafficMedium?: string[];
-}
+export type DimensionFilters = Partial<Record<FilterKey, string[]>>;
 
 export interface DashboardQuery {
+  property: PropertyKey;
   range: DateRange;
   filters: DimensionFilters;
 }
 
-export type BreakdownDimension =
-  | "ga4City"
-  | "country"
-  | "platform"
-  | "device"
-  | "brand"
-  | "trafficSourceMedium";
+/** Breakdown dimensions "Where did ECR drop?" can group by — a subset of FilterKey (trafficSource+trafficMedium are combined into one breakdown column). */
+export type BreakdownDimension = "ga4City" | "country" | "device" | "trafficSourceMedium";
 
 /** Direction/severity vocabulary shared by every "highlight the drop" surface. */
 export type ChangeSeverity = "MAJOR_DROP" | "DROP" | "STABLE" | "IMPROVED";
@@ -98,7 +50,8 @@ export interface FunnelStageResult {
   /** Numerator / denominator user counts behind the percentage, for transparency. */
   numeratorUsers: number;
   denominatorUsers: number;
-  rate: number | null; // 0-100, null if denominator is 0
+  /** 0-100, null if denominator is 0. Intentionally NOT capped at 100 — see lib/metrics.ts. */
+  rate: number | null;
 }
 
 export interface FunnelStageComparison extends MetricChange {
@@ -110,13 +63,13 @@ export interface FunnelStageComparison extends MetricChange {
 
 export interface DailyTrendPoint {
   date: string;
-  counts: FunnelCounts;
+  counts: RawCounts;
 }
 
 export interface BreakdownRow {
   dimensionValue: string;
-  current: FunnelCounts;
-  comparison: FunnelCounts;
+  current: RawCounts;
+  comparison: RawCounts;
   shoppingEcr: MetricChange;
   checkoutEcr: MetricChange;
 }
@@ -133,8 +86,6 @@ export interface DataQualityCheckResult {
 }
 
 export interface FilterOptions {
-  brands: string[];
-  platforms: string[];
   devices: string[];
   countries: string[];
   ga4Cities: string[];

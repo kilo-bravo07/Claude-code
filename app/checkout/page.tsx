@@ -12,7 +12,7 @@ import { LoadingPanel, ErrorPanel } from "@/components/StatePanels";
 import { useFunnelCounts } from "@/hooks/useFunnelCounts";
 import { useChangeUnit } from "@/hooks/useChangeUnit";
 import { useDashboardFilters } from "@/hooks/useDashboardFilters";
-import { computeCheckoutFunnel } from "@/lib/metrics";
+import { getProperty } from "@/lib/properties";
 import { buildStageCards } from "@/lib/view-model";
 import { comparisonLabel } from "@/lib/date-utils";
 
@@ -27,7 +27,9 @@ export default function CheckoutPage() {
 function CheckoutContent() {
   const funnelState = useFunnelCounts();
   const { unit } = useChangeUnit();
-  const { comparisonMode } = useDashboardFilters();
+  const { property: propertyKey, comparisonMode } = useDashboardFilters();
+  const property = getProperty(propertyKey);
+  const available = new Set(property.availableFilters);
 
   return (
     <div className="space-y-6">
@@ -37,14 +39,16 @@ function CheckoutContent() {
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-500">Checkout KPIs</h2>
         {funnelState.status === "loading" && <LoadingPanel />}
         {funnelState.status === "error" && <ErrorPanel message={funnelState.error} />}
-        {funnelState.status === "success" && <FunnelKpiRow data={funnelState.data} funnel="checkout" unit={unit} />}
+        {funnelState.status === "success" && (
+          <FunnelKpiRow data={funnelState.data} property={property} funnel="checkout" unit={unit} />
+        )}
       </section>
 
       <section>
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-500">Checkout funnel</h2>
         {funnelState.status === "success" && (
           <div className="rounded border border-ink-100 p-3">
-            <CheckoutFunnelViz counts={funnelState.data.current} />
+            <CheckoutFunnelViz property={property} counts={funnelState.data.current} />
           </div>
         )}
       </section>
@@ -55,18 +59,18 @@ function CheckoutContent() {
       </section>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <section>
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-500">City breakdown (GA4 City)</h2>
-          <DimensionBreakdownSection dimension="ga4City" dimensionLabel="GA4 City" ecrKind="checkoutEcr" />
-        </section>
-        <section>
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-500">Platform breakdown</h2>
-          <DimensionBreakdownSection dimension="platform" dimensionLabel="Platform" ecrKind="checkoutEcr" />
-        </section>
-        <section>
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-500">Device breakdown</h2>
-          <DimensionBreakdownSection dimension="device" dimensionLabel="Device" ecrKind="checkoutEcr" />
-        </section>
+        {available.has("ga4City") && (
+          <section>
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-500">City breakdown (GA4 City)</h2>
+            <DimensionBreakdownSection dimension="ga4City" dimensionLabel="GA4 City" ecrKind="checkoutEcr" />
+          </section>
+        )}
+        {available.has("device") && (
+          <section>
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-500">Device breakdown</h2>
+            <DimensionBreakdownSection dimension="device" dimensionLabel="Device" ecrKind="checkoutEcr" />
+          </section>
+        )}
       </div>
 
       <section>
@@ -74,7 +78,7 @@ function CheckoutContent() {
         {funnelState.status === "success" && (
           <StepDropSummary
             stages={buildStageCards(
-              computeCheckoutFunnel,
+              property.checkout,
               funnelState.data.current,
               funnelState.data.d7?.counts ?? null,
               funnelState.data.d365?.counts ?? null,

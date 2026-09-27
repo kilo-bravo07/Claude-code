@@ -11,9 +11,20 @@ interface Props {
   sortByDeterioration?: boolean;
   limit?: number;
   dimensionLabel: string;
+  /** Raw-counts key used for the "Users" column — the property's shopping-funnel root (e.g. "sessionStart"). */
+  rootCountKey: string;
 }
 
-export function BreakdownTable({ rows, ecrKind, unit, comparisonLabel, sortByDeterioration, limit, dimensionLabel }: Props) {
+export function BreakdownTable({
+  rows,
+  ecrKind,
+  unit,
+  comparisonLabel,
+  sortByDeterioration,
+  limit,
+  dimensionLabel,
+  rootCountKey,
+}: Props) {
   const sorted = [...rows].sort((a, b) => {
     if (sortByDeterioration) {
       const ap = a[ecrKind].ppChange ?? Infinity;
@@ -52,7 +63,7 @@ export function BreakdownTable({ rows, ecrKind, unit, comparisonLabel, sortByDet
                 <td className={`px-2 py-1.5 tabular-nums font-medium severity-${change.severity}`}>
                   {unit === "pp" ? formatPp(change.ppChange) : formatRelative(change.relativeChange)}
                 </td>
-                <td className="px-2 py-1.5 tabular-nums text-ink-500">{row.current.sessionStartUsers.toLocaleString()}</td>
+                <td className="px-2 py-1.5 tabular-nums text-ink-500">{(row.current[rootCountKey] ?? 0).toLocaleString()}</td>
                 <td className="px-2 py-1.5">
                   <SeverityTag severity={change.severity} />
                 </td>

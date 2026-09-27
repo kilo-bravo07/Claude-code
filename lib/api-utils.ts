@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { getProperty, isPropertyKey } from "./properties";
+import type { PropertyConfig } from "./properties/types";
 import type { ComparisonMode, DashboardQuery, DimensionFilters } from "./types";
 
 function listParam(params: URLSearchParams, key: string): string[] | undefined {
@@ -10,8 +12,6 @@ function listParam(params: URLSearchParams, key: string): string[] | undefined {
 
 export function parseFilters(params: URLSearchParams): DimensionFilters {
   return {
-    brand: listParam(params, "brand"),
-    platform: listParam(params, "platform"),
     device: listParam(params, "device"),
     country: listParam(params, "country"),
     ga4City: listParam(params, "ga4City"),
@@ -20,13 +20,22 @@ export function parseFilters(params: URLSearchParams): DimensionFilters {
   };
 }
 
+export function parseProperty(params: URLSearchParams): PropertyConfig {
+  const key = params.get("property");
+  if (!key || !isPropertyKey(key)) {
+    throw new ApiError(400, "Missing or invalid 'property' query parameter. Must be one of the configured property keys.");
+  }
+  return getProperty(key);
+}
+
 export function parseQuery(params: URLSearchParams): DashboardQuery {
   const start = params.get("start");
   const end = params.get("end");
   if (!start || !end) {
     throw new ApiError(400, "Missing required 'start' and 'end' date query parameters (ISO yyyy-mm-dd).");
   }
-  return { range: { start, end }, filters: parseFilters(params) };
+  const property = parseProperty(params);
+  return { property: property.key, range: { start, end }, filters: parseFilters(params) };
 }
 
 export function parseComparisonMode(params: URLSearchParams): ComparisonMode {

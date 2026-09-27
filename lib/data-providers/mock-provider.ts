@@ -1,6 +1,6 @@
 import { enumerateDates } from "../date-utils";
-import { runDataQualityChecks, type QualitySignals } from "../data-quality";
-import { emptyCounts, sumCounts, computeShoppingEcr, computeCheckoutEcr, compareEcr } from "../metrics";
+import { runDataQualityChecks, type OverHundredFinding, type QualitySignals } from "../data-quality";
+import { computeFunnel, compareMetric, emptyCounts, sumCounts } from "../metrics";
 import type {
   BreakdownDimension,
   BreakdownRow,
@@ -8,27 +8,25 @@ import type {
   DashboardQuery,
   DataQualityCheckResult,
   FilterOptions,
-  FunnelCounts,
+  RawCounts,
 } from "../types";
+import type { PropertyConfig } from "../properties/types";
 import type { DataProvider } from "./types";
 import { buildCombos, comboCounts, comboMatchesFilters, demoDataRange, type Combo } from "./synthetic";
 
-function countsForQuery(query: DashboardQuery): FunnelCounts {
+function countsForQuery(property: PropertyConfig, query: DashboardQuery): RawCounts {
   const combos = buildCombos().filter((c) => comboMatchesFilters(c, query.filters));
   const dates = enumerateDates(query.range);
-  const rows: FunnelCounts[] = [];
+  const rows: RawCounts[] = [];
   for (const date of dates) {
     for (const combo of combos) {
-      rows.push(comboCounts(combo, date));
+      rows.push(comboCounts(property, combo, date));
     }
   }
   return sumCounts(rows.length ? rows : [emptyCounts()]);
 }
 
 function seededCoverage(seedParts: (string | number)[], base: number): number {
-  // Deterministic demo coverage value so the Data Quality panel has
-  // something real (if unremarkable) to surface, distinct from the ECR
-  // "recent dip" story generated in synthetic.ts.
   const key = seedParts.join("|");
   let h = 2166136261;
   for (let i = 0; i < key.length; i++) {
@@ -39,23 +37,52 @@ function seededCoverage(seedParts: (string | number)[], base: number): number {
   return Math.max(0, Math.min(1, base + noise * 0.06));
 }
 
+function dimensionValue(combo: Combo, dimension: BreakdownDimension): string {
+  switch (dimension) {
+    case "ga4City":
+      return combo.ga4City;
+    case "country":
+      return combo.country;
+    case "device":
+      return combo.device;
+    case "trafficSourceMedium":
+      return `${combo.trafficSource} / ${combo.trafficMedium}`;
+  }
+}
+
+function findOver100(property: PropertyConfig, counts: RawCounts): OverHundredFinding[] {
+  const findings: OverHundredFinding[] = [];
+  computeFunnel(property.shopping, counts).forEach((stage) => {
+    if (stage.rate !== null && stage.rate > 100) {
+      findings.push({ key: stage.key, label: stage.label, funnel: "shopping", rate: stage.rate });
+    }
+  });
+  computeFunnel(property.checkout, counts).forEach((stage) => {
+    if (stage.rate !== null && stage.rate > 100) {
+      findings.push({ key: stage.key, label: stage.label, funnel: "checkout", rate: stage.rate });
+    }
+  });
+  return findings;
+}
+
 export class MockDataProvider implements DataProvider {
   readonly mode = "mock" as const;
 
-  async getFunnelCounts(query: DashboardQuery): Promise<FunnelCounts> {
-    return countsForQuery(query);
+  async getFunnelCounts(property: PropertyConfig, query: DashboardQuery): Promise<RawCounts> {
+    return countsForQuery(property, query);
   }
 
-  async getDailyTrend(query: DashboardQuery): Promise<DailyTrendPoint[]> {
+  async getDailyTrend(property: PropertyConfig, query: DashboardQuery): Promise<DailyTrendPoint[]> {
     const combos = buildCombos().filter((c) => comboMatchesFilters(c, query.filters));
     const dates = enumerateDates(query.range);
     return dates.map((date) => ({
       date,
-      counts: sumCounts(combos.length ? combos.map((c) => comboCounts(c, date)) : [emptyCounts()]),
+      counts: sumCounts(combos.length ? combos.map((c) => comboCounts(property, c, date)) : [emptyCounts()]),
     }));
   }
 
   async getBreakdown(
+    property: PropertyConfig,
     query: DashboardQuery,
     dimension: BreakdownDimension,
     comparison: DashboardQuery | null,
@@ -74,61 +101,57 @@ export class MockDataProvider implements DataProvider {
 
     const rows: BreakdownRow[] = [];
     for (const [dimensionValueKey, comboList] of groups) {
-      const current = sumCounts(
-        currentDates.flatMap((date) => comboList.map((c) => comboCounts(c, date))),
-      );
+      const current = sumCounts(currentDates.flatMap((date) => comboList.map((c) => comboCounts(property, c, date))));
       const comparisonCounts = comparison
-        ? sumCounts(comparisonDates.flatMap((date) => comboList.map((c) => comboCounts(c, date))))
+        ? sumCounts(comparisonDates.flatMap((date) => comboList.map((c) => comboCounts(property, c, date))))
         : emptyCounts();
 
       rows.push({
         dimensionValue: dimensionValueKey,
         current,
         comparison: comparisonCounts,
-        shoppingEcr: compareEcr(computeShoppingEcr, current, comparison ? comparisonCounts : null),
-        checkoutEcr: compareEcr(computeCheckoutEcr, current, comparison ? comparisonCounts : null),
+        shoppingEcr: compareMetric(property.shopping.ecr, current, comparison ? comparisonCounts : null),
+        checkoutEcr: compareMetric(property.checkout.ecr, current, comparison ? comparisonCounts : null),
       });
     }
     return rows;
   }
 
-  async getDataQuality(query: DashboardQuery): Promise<DataQualityCheckResult[]> {
-    const counts = countsForQuery(query);
-    const rangeKey = `${query.range.start}_${query.range.end}`;
+  async getDataQuality(property: PropertyConfig, query: DashboardQuery): Promise<DataQualityCheckResult[]> {
+    const counts = countsForQuery(property, query);
+    const rangeKey = `${property.key}:${query.range.start}_${query.range.end}`;
+
+    const eventCounts: Record<string, number> = {};
+    const eventLabels: Record<string, string> = {};
+    const track = (key: string, label: string) => {
+      eventCounts[key] = counts[key] ?? 0;
+      eventLabels[key] = label;
+    };
+    track(property.shopping.root.key, property.shopping.root.label);
+    property.shopping.stages.forEach((s) => track(s.key, s.label));
+    track(property.checkout.root.key, property.checkout.root.label);
+    property.checkout.stages.forEach((s) => track(s.key, s.label));
+
+    const checkoutStagesWithData = property.checkout.stages.filter((s) => (counts[s.key] ?? 0) > 0).length;
 
     const signals: QualitySignals = {
-      eventCounts: {
-        sessionStart: counts.sessionStartUsers,
-        viewItem: counts.viewItemUsers,
-        addToCart: counts.addToCartUsers,
-        beginCheckout: counts.beginCheckoutUsers,
-        purchase: counts.purchaseUsers,
-        purchaseRevenue: counts.revenue,
-      },
+      eventCounts,
+      eventLabels,
       itemIdCoverage: seededCoverage([rangeKey, "item_id"], 0.96),
       itemCategoryCoverage: seededCoverage([rangeKey, "item_category"], 0.94),
       itemListNameCoverage: seededCoverage([rangeKey, "item_list_name"], 0.9),
-      checkoutEventCoverage:
-        counts.beginCheckoutUsers > 0
-          ? Math.min(
-              1,
-              (counts.checkoutStep2Users > 0 ? 0.25 : 0) +
-                (counts.checkoutStep3Users > 0 ? 0.25 : 0) +
-                (counts.checkoutStep4Users > 0 ? 0.25 : 0) +
-                (counts.checkoutStep5Users > 0 ? 0.25 : 0),
-            )
-          : 1,
+      checkoutEventCoverage: property.checkout.stages.length > 0 ? checkoutStagesWithData / property.checkout.stages.length : 1,
+      over100: findOver100(property, counts),
     };
 
     return runDataQualityChecks(signals);
   }
 
-  async getFilterOptions(): Promise<FilterOptions> {
+  async getFilterOptions(property: PropertyConfig): Promise<FilterOptions> {
     const combos = buildCombos();
     const uniq = (values: string[]) => Array.from(new Set(values)).sort();
+    void property;
     return {
-      brands: uniq(combos.map((c) => c.brand)),
-      platforms: uniq(combos.map((c) => c.platform)),
       devices: uniq(combos.map((c) => c.device)),
       countries: uniq(combos.map((c) => c.country)),
       ga4Cities: uniq(combos.map((c) => c.ga4City)),
@@ -136,22 +159,5 @@ export class MockDataProvider implements DataProvider {
       trafficMediums: uniq(combos.map((c) => c.trafficMedium)),
       dataRange: demoDataRange(),
     };
-  }
-}
-
-function dimensionValue(combo: Combo, dimension: BreakdownDimension): string {
-  switch (dimension) {
-    case "ga4City":
-      return combo.ga4City;
-    case "country":
-      return combo.country;
-    case "platform":
-      return combo.platform;
-    case "device":
-      return combo.device;
-    case "brand":
-      return combo.brand;
-    case "trafficSourceMedium":
-      return `${combo.trafficSource} / ${combo.trafficMedium}`;
   }
 }

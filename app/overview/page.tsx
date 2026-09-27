@@ -9,6 +9,8 @@ import { DataQualityPanel } from "@/components/DataQualityPanel";
 import { LoadingPanel, ErrorPanel } from "@/components/StatePanels";
 import { useFunnelCounts } from "@/hooks/useFunnelCounts";
 import { useChangeUnit } from "@/hooks/useChangeUnit";
+import { useDashboardFilters } from "@/hooks/useDashboardFilters";
+import { getProperty } from "@/lib/properties";
 
 export default function OverviewPage() {
   return (
@@ -21,6 +23,8 @@ export default function OverviewPage() {
 function OverviewContent() {
   const funnelState = useFunnelCounts();
   const { unit } = useChangeUnit();
+  const { property: propertyKey } = useDashboardFilters();
+  const property = getProperty(propertyKey);
 
   return (
     <div className="space-y-6">
@@ -30,14 +34,18 @@ function OverviewContent() {
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-500">Shopping ECR</h2>
         {funnelState.status === "loading" && <LoadingPanel label="Loading shopping funnel…" />}
         {funnelState.status === "error" && <ErrorPanel message={funnelState.error} />}
-        {funnelState.status === "success" && <FunnelKpiRow data={funnelState.data} funnel="shopping" unit={unit} />}
+        {funnelState.status === "success" && (
+          <FunnelKpiRow data={funnelState.data} property={property} funnel="shopping" unit={unit} />
+        )}
       </section>
 
       <section>
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-500">Checkout ECR</h2>
         {funnelState.status === "loading" && <LoadingPanel label="Loading checkout funnel…" />}
         {funnelState.status === "error" && <ErrorPanel message={funnelState.error} />}
-        {funnelState.status === "success" && <FunnelKpiRow data={funnelState.data} funnel="checkout" unit={unit} />}
+        {funnelState.status === "success" && (
+          <FunnelKpiRow data={funnelState.data} property={property} funnel="checkout" unit={unit} />
+        )}
       </section>
 
       <WhereDidEcrDrop ecrKind="shoppingEcr" />

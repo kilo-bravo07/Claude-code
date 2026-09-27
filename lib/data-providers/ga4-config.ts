@@ -1,49 +1,29 @@
 /**
- * Every GA4-specific name (event names, custom-dimension names) that this
- * app depends on is read from the environment here — nothing is hardcoded
- * in ga4-provider.ts itself. See .env.example and README.md ("Connecting
- * GA4") for what each of these means and how to find the right value for
- * your property.
+ * GA4 auth is shared across all four properties (the same Google account/
+ * service account needs Viewer access on each property) — only the GA4
+ * property ID differs per property, read from the env var named in each
+ * property's `ga4PropertyIdEnvVar` (lib/properties/*.ts). See .env.example
+ * and README.md ("Connecting GA4") for exactly what to set.
  */
-function env(name: string, fallback: string): string {
-  return process.env[name]?.trim() || fallback;
-}
+import type { PropertyConfig } from "../properties/types";
 
-export const ga4Config = {
-  propertyId: process.env.GA4_PROPERTY_ID?.trim() || "",
-
-  auth: {
-    serviceAccountKeyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim() || "",
-    oauthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "",
-    oauthClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() || "",
-    oauthRefreshToken: process.env.GOOGLE_OAUTH_REFRESH_TOKEN?.trim() || "",
-  },
-
-  events: {
-    sessionStart: env("GA4_EVENT_SESSION_START", "session_start"),
-    viewItem: env("GA4_EVENT_VIEW_ITEM", "view_item"),
-    addToCart: env("GA4_EVENT_ADD_TO_CART", "add_to_cart"),
-    beginCheckout: env("GA4_EVENT_BEGIN_CHECKOUT", "begin_checkout"),
-    checkoutStep2: env("GA4_EVENT_CHECKOUT_STEP2", "checkout_step_2"),
-    checkoutStep3: env("GA4_EVENT_CHECKOUT_STEP3", "checkout_step_3"),
-    checkoutStep4: env("GA4_EVENT_CHECKOUT_STEP4", "checkout_step_4"),
-    checkoutStep5: env("GA4_EVENT_CHECKOUT_STEP5", "checkout_step_5"),
-    purchase: env("GA4_EVENT_PURCHASE", "purchase"),
-  },
-
-  /**
-   * GA4 custom dimension that identifies "brand" (e.g. multiple sites/apps
-   * reporting into one property). Leave unset if you have a single brand —
-   * the dashboard will report everything under "Default".
-   * Format: "customEvent:your_dimension_name" or "customUser:your_dimension_name".
-   */
-  brandDimension: process.env.GA4_BRAND_DIMENSION?.trim() || "",
+export const ga4Auth = {
+  serviceAccountKeyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim() || "",
+  oauthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "",
+  oauthClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() || "",
+  oauthRefreshToken: process.env.GOOGLE_OAUTH_REFRESH_TOKEN?.trim() || "",
 };
 
-export function isGa4Configured(): boolean {
-  const hasProperty = !!ga4Config.propertyId;
-  const hasServiceAccount = !!ga4Config.auth.serviceAccountKeyFile;
-  const hasOauth =
-    !!ga4Config.auth.oauthClientId && !!ga4Config.auth.oauthClientSecret && !!ga4Config.auth.oauthRefreshToken;
-  return hasProperty && (hasServiceAccount || hasOauth);
+export function isAuthConfigured(): boolean {
+  const hasServiceAccount = !!ga4Auth.serviceAccountKeyFile;
+  const hasOauth = !!ga4Auth.oauthClientId && !!ga4Auth.oauthClientSecret && !!ga4Auth.oauthRefreshToken;
+  return hasServiceAccount || hasOauth;
+}
+
+export function getPropertyId(property: Pick<PropertyConfig, "ga4PropertyIdEnvVar">): string {
+  return process.env[property.ga4PropertyIdEnvVar]?.trim() || "";
+}
+
+export function isPropertyConfigured(property: Pick<PropertyConfig, "ga4PropertyIdEnvVar">): boolean {
+  return !!getPropertyId(property) && isAuthConfigured();
 }

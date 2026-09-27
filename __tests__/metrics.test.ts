@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   classifySeverity,
-  compareEcr,
   compareFunnels,
+  compareMetric,
   compareRates,
-  computeCheckoutEcr,
-  computeCheckoutFunnel,
-  computeOverallEcr,
-  computeShoppingEcr,
-  computeShoppingFunnel,
+  computeFunnel,
+  computeMetric,
   emptyCounts,
   formatPercent,
   formatPp,
@@ -16,11 +13,8 @@ import {
   rate,
   sumCounts,
 } from "@/lib/metrics";
-import type { FunnelCounts } from "@/lib/types";
-
-function counts(overrides: Partial<FunnelCounts>): FunnelCounts {
-  return { ...emptyCounts(), ...overrides };
-}
+import type { RawCounts } from "@/lib/types";
+import type { FunnelDefinition } from "@/lib/properties/types";
 
 describe("rate", () => {
   it("computes a percentage", () => {
@@ -32,85 +26,51 @@ describe("rate", () => {
   it("returns null for a negative denominator", () => {
     expect(rate(10, -5)).toBeNull();
   });
-});
-
-describe("computeShoppingFunnel — spec worked example", () => {
-  // sessions=10000, view_item=3500, ATC=1300, begin_checkout=1200, purchase=500
-  // => View Item 35%, ATC 37.14%, Checkout 92.31%, Purchase 41.67%, ECR 5%
-  const c = counts({
-    sessionStartUsers: 10000,
-    viewItemUsers: 3500,
-    addToCartUsers: 1300,
-    beginCheckoutUsers: 1200,
-    purchaseUsers: 500,
-  });
-
-  it("View Item % = View Item / Session Start", () => {
-    const [viewItem] = computeShoppingFunnel(c);
-    expect(viewItem.rate).toBeCloseTo(35, 5);
-  });
-
-  it("Add to Cart % = ATC / View Item", () => {
-    const [, atc] = computeShoppingFunnel(c);
-    expect(atc.rate).toBeCloseTo(37.142857, 4);
-  });
-
-  it("Checkout % = Begin Checkout / ATC", () => {
-    const [, , checkout] = computeShoppingFunnel(c);
-    expect(checkout.rate).toBeCloseTo(92.307692, 4);
-  });
-
-  it("Purchase % = Purchase / Begin Checkout", () => {
-    const [, , , purchase] = computeShoppingFunnel(c);
-    expect(purchase.rate).toBeCloseTo(41.666667, 4);
-  });
-
-  it("Shopping ECR = Purchase / Session Start", () => {
-    expect(computeShoppingEcr(c)).toBeCloseTo(5, 5);
-  });
-
-  it("Overall ECR uses the same denominator as Shopping ECR (Session Start), never Add to Cart or Begin Checkout", () => {
-    expect(computeOverallEcr(c)).toBe(computeShoppingEcr(c));
+  it("is never capped at 100 — some properties' real methodology exceeds it", () => {
+    expect(rate(1584, 1462)).toBeCloseTo(108.3447, 3);
   });
 });
 
-describe("computeCheckoutFunnel", () => {
-  const c = counts({
-    beginCheckoutUsers: 1207,
-    checkoutStep2Users: 962,
-    checkoutStep3Users: 830,
-    checkoutStep4Users: 814,
-    checkoutStep5Users: 732,
-    purchaseUsers: 566,
-  });
-  const stages = computeCheckoutFunnel(c);
+// A small synthetic 3-stage funnel (root -> a -> b -> c) used to test the
+// generic engine in isolation, independent of any real property's shape.
+const GENERIC_FUNNEL: FunnelDefinition = {
+  root: { key: "root", label: "Root", ga4EventName: "root_event" },
+  stages: [
+    { key: "a", label: "A", ga4EventName: "a_event" },
+    { key: "b", label: "B", ga4EventName: "b_event" },
+    { key: "c", label: "C", ga4EventName: "c_event" },
+  ],
+  ecr: { key: "ecr", label: "ECR", numeratorKey: "c", denominatorKey: "root", description: "c / root" },
+};
 
-  it("Step 2 = Step 2 / Begin Checkout", () => {
-    expect(stages[0].rate).toBeCloseTo((962 / 1207) * 100, 5);
+describe("computeFunnel — spec worked example (sessions=10000, view=3500, atc=1300, checkout=1200, purchase=500)", () => {
+  const counts: RawCounts = { root: 10000, a: 3500, b: 1300, c: 500 };
+  const stages = computeFunnel(GENERIC_FUNNEL, counts);
+
+  it("stage A = A / root", () => {
+    expect(stages[0].rate).toBeCloseTo(35, 5);
   });
-  it("Step 3 = Step 3 / Step 2 (denominator is the previous step, not Begin Checkout)", () => {
-    expect(stages[1].rate).toBeCloseTo((830 / 962) * 100, 5);
+  it("stage B = B / A (not B / root)", () => {
+    expect(stages[1].rate).toBeCloseTo((1300 / 3500) * 100, 5);
   });
-  it("Step 4 = Step 4 / Step 3", () => {
-    expect(stages[2].rate).toBeCloseTo((814 / 830) * 100, 5);
+  it("stage C = C / B", () => {
+    expect(stages[2].rate).toBeCloseTo((500 / 1300) * 100, 5);
   });
-  it("Step 5 = Step 5 / Step 4", () => {
-    expect(stages[3].rate).toBeCloseTo((732 / 814) * 100, 5);
-  });
-  it("Purchase = Purchase / Step 5", () => {
-    expect(stages[4].rate).toBeCloseTo((566 / 732) * 100, 5);
-  });
-  it("Checkout ECR = Purchase / Begin Checkout (not Purchase / Step 5)", () => {
-    expect(computeCheckoutEcr(c)).toBeCloseTo((566 / 1207) * 100, 5);
-    expect(computeCheckoutEcr(c)).not.toBeCloseTo(stages[4].rate!, 2);
+  it("ECR = C / root", () => {
+    expect(computeMetric(GENERIC_FUNNEL.ecr, counts)).toBeCloseTo(5, 5);
   });
 });
 
 describe("zero/null handling", () => {
   it("a stage with a zero denominator reports null, not 0% or Infinity", () => {
-    const c = counts({ sessionStartUsers: 0, viewItemUsers: 0 });
-    const [viewItem] = computeShoppingFunnel(c);
-    expect(viewItem.rate).toBeNull();
+    const stages = computeFunnel(GENERIC_FUNNEL, { root: 0, a: 0 });
+    expect(stages[0].rate).toBeNull();
+  });
+
+  it("a missing key in RawCounts is treated as 0, not undefined/NaN", () => {
+    const stages = computeFunnel(GENERIC_FUNNEL, { root: 100 });
+    expect(stages[0].numeratorUsers).toBe(0);
+    expect(stages[0].rate).toBe(0);
   });
 
   it("compareRates with a null comparison yields a null pp/relative change and STABLE severity", () => {
@@ -120,8 +80,12 @@ describe("zero/null handling", () => {
     expect(change.severity).toBe("STABLE");
   });
 
-  it("sumCounts of an empty list returns all-zero counts, not a crash", () => {
+  it("sumCounts of an empty list returns an empty bag, not a crash", () => {
     expect(sumCounts([])).toEqual(emptyCounts());
+  });
+
+  it("sumCounts unions keys across rows that don't all share the same shape", () => {
+    expect(sumCounts([{ a: 1 }, { b: 2 }, { a: 3, b: 1 }])).toEqual({ a: 4, b: 3 });
   });
 });
 
@@ -159,49 +123,32 @@ describe("drop severity classification (config-driven thresholds)", () => {
   it("treats a null change as STABLE (no fabricated severity when there is no comparison data)", () => {
     expect(classifySeverity(null)).toBe("STABLE");
   });
+  it("a >100% stage that improves further is still classified normally (severity math doesn't special-case >100%)", () => {
+    expect(classifySeverity(5)).toBe("IMPROVED");
+  });
 });
 
-describe("compareFunnels / compareEcr wiring", () => {
-  const current = counts({
-    sessionStartUsers: 10393,
-    viewItemUsers: 3617,
-    addToCartUsers: 1309,
-    beginCheckoutUsers: 1207,
-    checkoutStep2Users: 962,
-    checkoutStep3Users: 830,
-    checkoutStep4Users: 814,
-    checkoutStep5Users: 732,
-    purchaseUsers: 566,
-  });
-  const priorWeek = counts({
-    sessionStartUsers: 10265,
-    viewItemUsers: 3483,
-    addToCartUsers: 1202,
-    beginCheckoutUsers: 1088,
-    checkoutStep2Users: 877,
-    checkoutStep3Users: 775,
-    checkoutStep4Users: 758,
-    checkoutStep5Users: 696,
-    purchaseUsers: 552,
-  });
+describe("compareFunnels / compareMetric wiring", () => {
+  const current: RawCounts = { root: 10393, a: 3617, b: 1309, c: 566 };
+  const priorWeek: RawCounts = { root: 10265, a: 3483, b: 1202, c: 552 };
 
-  it("produces one comparison row per shopping funnel stage with matching keys", () => {
-    const rows = compareFunnels(computeShoppingFunnel, current, priorWeek);
-    expect(rows.map((r) => r.key)).toEqual(["viewItem", "addToCart", "checkout", "purchase"]);
+  it("produces one comparison row per stage with matching keys, in order", () => {
+    const rows = compareFunnels(GENERIC_FUNNEL, current, priorWeek);
+    expect(rows.map((r) => r.key)).toEqual(["a", "b", "c"]);
     rows.forEach((row) => {
       expect(row.currentValue).not.toBeNull();
       expect(row.comparisonValue).not.toBeNull();
     });
   });
 
-  it("compareEcr compares Shopping ECR current vs D-7", () => {
-    const change = compareEcr(computeShoppingEcr, current, priorWeek);
-    expect(change.currentValue).toBeCloseTo(computeShoppingEcr(current)!, 5);
-    expect(change.comparisonValue).toBeCloseTo(computeShoppingEcr(priorWeek)!, 5);
+  it("compareMetric compares the ECR metric current vs D-7", () => {
+    const change = compareMetric(GENERIC_FUNNEL.ecr, current, priorWeek);
+    expect(change.currentValue).toBeCloseTo(computeMetric(GENERIC_FUNNEL.ecr, current)!, 5);
+    expect(change.comparisonValue).toBeCloseTo(computeMetric(GENERIC_FUNNEL.ecr, priorWeek)!, 5);
   });
 
   it("a null comparison funnel (e.g. comparison mode = none) yields null comparison values throughout", () => {
-    const rows = compareFunnels(computeCheckoutFunnel, current, null);
+    const rows = compareFunnels(GENERIC_FUNNEL, current, null);
     rows.forEach((row) => expect(row.comparisonValue).toBeNull());
   });
 });
