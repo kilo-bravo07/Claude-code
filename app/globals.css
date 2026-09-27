@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  @apply bg-white text-ink-900 antialiased;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: theme("colors.ink.300");
+  border-radius: 4px;
+}
+
+.severity-MAJOR_DROP {
+  @apply text-drop-major font-semibold;
+}
+.severity-DROP {
+  @apply text-drop-minor font-semibold;
+}
+.severity-STABLE {
+  @apply text-ink-500;
+}
+.severity-IMPROVED {
+  @apply text-improve font-semibold;
+}
+
+.severity-bg-MAJOR_DROP {
+  @apply bg-red-50;
+}
+.severity-bg-DROP {
+  @apply bg-orange-50;
+}
+.severity-bg-STABLE {
+  @apply bg-transparent;
+}
+.severity-bg-IMPROVED {
+  @apply bg-emerald-50;
+}
